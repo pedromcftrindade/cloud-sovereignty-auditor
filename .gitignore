@@ -5,8 +5,12 @@
 __pycache__/
 *.pyc
 .venv/
+.venv*/
 venv/
 .pytest_cache/
+
+# cached AI answers (llm.py)
+.cache/
 
 # terraform
 .terraform/
@@ -17,3 +21,6 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+/docs
+/examples

@@ -1,4 +1,10 @@
-"""Glue: folder -> parse -> classify -> score -> report. Also builds the dependency graph."""
+"""Glue: folder -> read -> classify -> score -> report. Also builds the dependency graph.
+
+Reading has two sources that end up in the same Analysis (model.py):
+  2a. parse_folder()  Terraform files: the infrastructure that is declared
+  2b. add_services()  config, code, dependencies, images, network snapshot:
+                      the third-party services the application really uses
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,8 @@ from .classifier import classify
 from .model import Analysis, Resource
 from .parser import parse_folder
 from .report import Report, generate_report
-from .scoring import Score, compute_score, score_by_provider
+from .scoring import Exposure, Score, compute_exposure, compute_score, score_by_provider
+from .services import add_services
 
 LEVEL_COLOURS = {0: "#2e7d32", 1: "#7cb342", 2: "#f9a825", 3: "#c62828"}
 SUPPORT_COLOUR = "#9e9e9e"
@@ -26,14 +33,23 @@ class Result:
     score: Score
     by_provider: dict[str, Score]
     report: Report
+    exposure: Optional[Exposure] = None
+
+    @property
+    def services(self) -> list[Resource]:
+        return [r for r in self.analysis.resources if r.origin == "service"]
 
 
-def analyse_folder(folder: str | Path, llm=None, project_name: Optional[str] = None) -> Result:
-    analysis = parse_folder(folder)
+def analyse_folder(folder: str | Path, llm=None, project_name: Optional[str] = None,
+                   include_services: bool = True) -> Result:
+    analysis = parse_folder(folder)                 # 2a: declared infrastructure (Terraform)
+    if include_services:
+        add_services(analysis, folder)              # 2b: third-party services really used
     unknown = classify(analysis, llm=llm)
     report = generate_report(analysis, unknown, llm=llm, project_name=project_name or Path(folder).name)
     return Result(analysis=analysis, unknown=unknown, score=compute_score(analysis.resources),
-                  by_provider=score_by_provider(analysis.resources), report=report)
+                  by_provider=score_by_provider(analysis.resources), report=report,
+                  exposure=compute_exposure(analysis.resources))
 
 
 def to_dot(analysis: Analysis, include_support: bool = False) -> str:
@@ -46,7 +62,10 @@ def to_dot(analysis: Analysis, include_support: bool = False) -> str:
         colour = SUPPORT_COLOUR if r.support else LEVEL_COLOURS.get(r.level, UNKNOWN_COLOUR)
         font = "black" if (not r.support and r.level in (1, 2)) else "white"   # readable on light fills
         level = "?" if r.level is None else r.level
-        label = f"{r.type}\\n{r.name} (level {level})"
+        if r.origin == "service":
+            label = f"{r.service or r.name}\\n{r.company or 'unknown owner'} (level {level})"
+        else:
+            label = f"{r.type}\\n{r.name} (level {level})"
         lines.append(f'  "{r.address}" [label="{label}", fillcolor="{colour}", fontcolor="{font}"];')
     direct = set()
     for r in shown:

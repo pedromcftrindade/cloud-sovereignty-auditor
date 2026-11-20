@@ -35,6 +35,8 @@ REGIONS: dict[str, tuple[str, str]] = {
 
 # All three hyperscalers are headquartered in the United States.
 US_PROVIDERS = {"aws", "azure", "gcp"}
+# Providers headquartered in the EU: provider id -> (company, zone of its headquarters)
+EU_PROVIDERS = {"leaseweb": ("Leaseweb", "EU")}      # Leaseweb is headquartered in the Netherlands
 
 
 def normalise(region: Optional[str]) -> Optional[str]:
@@ -43,10 +45,14 @@ def normalise(region: Optional[str]) -> Optional[str]:
     return region.strip().lower().replace(" ", "")
 
 
-def describe_region(region: Optional[str]) -> dict[str, str]:
+def describe_region(region: Optional[str], provider: Optional[str] = None) -> dict[str, str]:
     key = normalise(region)
     if key is None:
         return {"region": "unknown", "country": "unknown", "zone": "Unknown"}
+    if provider in EU_PROVIDERS:
+        # Region names such as "eu-west-3" mean different places for different providers:
+        # do not reuse the hyperscaler table for them.
+        return {"region": region, "country": "see the provider's documentation", "zone": "Unknown"}
     # Google zones like "europe-west1-b" -> region "europe-west1"
     if key not in REGIONS and key.count("-") == 2 and key.rsplit("-", 1)[1].isalpha() and len(key.rsplit("-", 1)[1]) == 1:
         key = key.rsplit("-", 1)[0]
@@ -55,6 +61,10 @@ def describe_region(region: Optional[str]) -> dict[str, str]:
 
 
 def jurisdiction_note(provider: str, zone: str) -> str:
+    if provider in EU_PROVIDERS:
+        company = EU_PROVIDERS[provider][0]
+        return (f"Provider headquartered in the EU ({company}). Check the data centre location "
+                "of this region in the provider's documentation.")
     if provider not in US_PROVIDERS:
         return "Provider jurisdiction not assessed."
     if zone == "EU":

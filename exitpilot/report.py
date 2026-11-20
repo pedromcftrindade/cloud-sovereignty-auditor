@@ -18,7 +18,8 @@ from typing import Any, Optional
 from .classifier import load_catalog
 from .model import PROVIDER_NAMES, Analysis, Resource
 from .regions import describe_region, jurisdiction_note
-from .scoring import Score, compute_score, counted_resources, score_by_provider
+from .scoring import Exposure, Score, compute_exposure, compute_score, counted_resources, score_by_provider
+from .services import evidence_summary
 
 EFFORT_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -48,23 +49,49 @@ def ranked_main_resources(resources: list[Resource]) -> list[Resource]:
                                        r.address))
 
 
+def service_rows(analysis: Analysis) -> list[dict[str, Any]]:
+    """Third-party services (step 2b), known ones first, worst lock-in first."""
+    services = [r for r in analysis.resources if r.origin == "service"]
+    rows = []
+    for r in sorted(services, key=lambda x: (x.level is None, -(x.level or 0), x.service or x.name)):
+        rows.append({
+            "address": r.address, "service": r.service or r.name, "company": r.company or "unknown",
+            "country": r.company_country or "unknown", "zone": r.company_zone or "Unknown",
+            "category": _category_info(r.category).get("label", r.category or "unclassified"),
+            "level": r.level, "european_alternative": _category_info(r.category).get("leaseweb", ""),
+            "evidence": evidence_summary(r), "verified": r.level is not None,
+        })
+    return rows
+
+
 def region_rows(analysis: Analysis) -> list[dict[str, str]]:
     rows, seen = [], set()
     for r in analysis.resources:
+        if r.origin == "service":          # services have a company, not a region: see service_rows()
+            continue
         key = (r.provider, r.region)
         if key in seen:
             continue
         seen.add(key)
-        info = describe_region(r.region)
+        info = describe_region(r.region, r.provider)
         rows.append({"provider": r.provider, "region": info["region"], "country": info["country"],
                      "zone": info["zone"], "note": jurisdiction_note(r.provider, info["zone"])})
     return sorted(rows, key=lambda x: (x["provider"], x["region"]))
 
 
-def build_facts(analysis: Analysis, score: Score, unknown: list[Resource]) -> dict[str, Any]:
+def build_facts(analysis: Analysis, score: Score, unknown: list[Resource],
+                exposure: Optional[Exposure] = None) -> dict[str, Any]:
     """The only information the LLM is allowed to use."""
     ranked = ranked_main_resources(analysis.resources)
+    exposure = exposure or compute_exposure(analysis.resources)
+    services = service_rows(analysis)
     return {
+        "jurisdiction_exposure": {"dependencies": exposure.total, "controlled_outside_eu": exposure.outside_eu,
+                                  "controlled_in_eu": exposure.in_eu, "unknown": exposure.unknown,
+                                  "companies_outside_eu": exposure.companies},
+        "third_party_services": [{k: s[k] for k in ("service", "company", "country", "zone", "category", "level")}
+                                 for s in services if s["verified"]],
+        "unknown_external_hosts": [s["service"] for s in services if not s["verified"]],
         "sovereignty_score": score.rounded,
         "score_label": score.label,
         "main_resources_counted": score.counted,
@@ -78,7 +105,7 @@ def build_facts(analysis: Analysis, score: Score, unknown: list[Resource]) -> di
             for r in ranked[:8]
         ],
         "estimated_modules": [r.address for r in analysis.resources if r.origin == "module"],
-        "unclassified_types": sorted({r.type for r in unknown}),
+        "unclassified_types": sorted({r.type for r in unknown if r.origin != "service"}),
         "files_with_errors": [e.file for e in analysis.errors],
     }
 
@@ -91,6 +118,8 @@ def _ask_llm_text(facts: dict[str, Any], llm) -> Optional[dict[str, Any]]:
         "of a European company. Use ONLY the facts below. Do not invent resources, numbers, prices "
         "or legal conclusions; say 'may be subject to', never 'illegal'.\n"
         f"FACTS:\n{json.dumps(facts, ensure_ascii=False, indent=1)}\n\n"
+        "If third_party_services is not empty, mention the jurisdiction exposure (how many dependencies "
+        "are controlled by companies headquartered outside the EU) in the summary.\n"
         "Answer ONLY with JSON in this shape:\n"
         '{"executive_summary": "3-4 sentences", '
         '"top_risks": [{"address": "<exactly one address from highest_lock_in_resources>", '
@@ -125,7 +154,8 @@ def _effort_of(analysis: Analysis, address: str) -> str:
 
 
 def _template_text(analysis: Analysis, score: Score, facts: dict[str, Any]) -> dict[str, Any]:
-    providers = ", ".join(facts["providers"]) or "no known provider"
+    infra = [p for p in facts["providers"] if p != PROVIDER_NAMES["saas"]]
+    providers = ", ".join(infra) or "no known cloud provider"
     level3 = score.by_level.get(3, 0)
     if level3 == 0:
         effort = ("No component depends on a proprietary service without a European equivalent; "
@@ -134,10 +164,21 @@ def _template_text(analysis: Analysis, score: Score, facts: dict[str, Any]) -> d
         noun = "component depends" if level3 == 1 else "components depend"
         effort = (f"{level3} {noun} on proprietary services with no direct European equivalent, "
                   "which is where most of the migration effort would go.")
+    services = facts.get("third_party_services", [])
+    if services:
+        what = (f"We analysed {score.counted} main components: {score.counted - len(services)} infrastructure "
+                f"resources on {providers} and {len(services)} third-party services the application uses. ")
+    else:
+        what = f"We analysed {score.counted} main infrastructure components running on {providers}. "
+    exp = facts.get("jurisdiction_exposure", {})
+    exposure = ""
+    if services and exp.get("dependencies"):
+        exposure = (f" {exp['controlled_outside_eu']} of {exp['dependencies']} dependencies are controlled by "
+                    "companies headquartered outside the EU, even when their servers are in Europe.")
     summary = (
-        f"We analysed {score.counted} main infrastructure components running on {providers}. "
-        f"The sovereignty score is {score.rounded if score.rounded is not None else 'n/a'}/100 "
-        f"({score.label.lower()}). {effort}"
+        what
+        + f"The sovereignty score is {score.rounded if score.rounded is not None else 'n/a'}/100 "
+        f"({score.label.lower()}). {effort}{exposure}"
     )
     risks = [
         {"address": r["address"],
@@ -156,7 +197,8 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
                     project_name: str = "infrastructure") -> Report:
     score = compute_score(analysis.resources)
     by_provider = score_by_provider(analysis.resources)
-    facts = build_facts(analysis, score, unknown)
+    exposure = compute_exposure(analysis.resources)
+    facts = build_facts(analysis, score, unknown, exposure)
 
     ai_text = _validated_ai_text(_ask_llm_text(facts, llm), facts)
     ai_used = ai_text is not None
@@ -184,11 +226,31 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
         add("")
 
     add("## 2. Where the data is\n")
-    add("| Provider | Region | Country | Zone | Note |\n|---|---|---|---|---|")
-    for row in facts["regions"]:
-        add(f"| {_esc(PROVIDER_NAMES.get(row['provider'], row['provider']))} | {_esc(row['region'])} | "
-            f"{_esc(row['country'])} | {_esc(row['zone'])} | {_esc(row['note'])} |")
+    if facts["regions"]:
+        add("| Provider | Region | Country | Zone | Note |\n|---|---|---|---|---|")
+        for row in facts["regions"]:
+            add(f"| {_esc(PROVIDER_NAMES.get(row['provider'], row['provider']))} | {_esc(row['region'])} | "
+                f"{_esc(row['country'])} | {_esc(row['zone'])} | {_esc(row['note'])} |")
+    else:
+        add("No cloud infrastructure was declared (no Terraform resources).")
     add("")
+
+    rows = service_rows(analysis)
+    if rows:
+        add("### Third-party services the application uses\n")
+        add("Found in configuration, code, dependencies, container images and network traffic. "
+            "The zone is where the **company** is headquartered: a European data centre does not change "
+            "which laws the company is subject to.\n")
+        if exposure.total:
+            add(f"**Jurisdiction exposure: {exposure.outside_eu} of {exposure.total} dependencies are controlled "
+                f"by companies headquartered outside the EU** ({exposure.in_eu} in the EU, {exposure.unknown} unknown).\n")
+        add("| Service | Company | Headquarters | Zone | Category | Level | Evidence |\n|---|---|---|---|---|---|---|")
+        for s in rows:
+            level = "n/a" if s["level"] is None else s["level"]
+            name = s["service"] if s["verified"] else f"{s['service']} (not verified)"
+            add(f"| {_esc(name)} | {_esc(s['company'])} | {_esc(s['country'])} | {_esc(s['zone'])} | "
+                f"{_esc(s['category'])} | {level} | {_esc(s['evidence'])} |")
+        add("")
 
     add("## 3. Biggest lock-in points\n")
     if not text["top_risks"]:
@@ -228,6 +290,9 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
             limits.append(f"- `{r.address}` was classified by AI (medium confidence).")
     for t in facts["unclassified_types"]:
         limits.append(f"- Type `{t}` is not in the catalog and was excluded from the score.")
+    for host in facts["unknown_external_hosts"]:
+        limits.append(f"- External host `{host}` is not in the services catalog: owner and jurisdiction "
+                      "not assessed, excluded from the score.")
     add("\n".join(limits) if limits else "Everything was analysed.")
     add("")
 

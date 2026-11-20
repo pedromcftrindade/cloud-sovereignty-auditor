@@ -4,8 +4,12 @@ Order of decisions:
   1. exact type in the catalog           -> confidence "high"
   2. longest matching prefix              -> confidence "high"   (e.g. aws_iam_*)
   3. remote module, by its short name     -> confidence "medium" (we cannot see inside)
-  4. the LLM, for whatever is left        -> confidence "medium" (validated, see below)
-  5. otherwise: unclassified              -> excluded from the score, listed in the report
+  4. third-party service in services.json -> confidence "high"   (step 2b, see services.py)
+  5. the LLM, for whatever is left        -> confidence "medium" (validated, see below)
+  6. otherwise: unclassified              -> excluded from the score, listed in the report
+
+Unknown third-party hosts are never sent to the LLM: who owns a service and
+where that company is based are facts, and facts come from curated files.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .model import Analysis, Resource
+from .services import load_services
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
 VALID_LEVELS = {0, 1, 2, 3}
@@ -43,6 +48,15 @@ def _apply(res: Resource, entry: dict[str, Any], catalog: dict[str, Any], by: st
 def classify_resource(res: Resource, catalog: Optional[dict[str, Any]] = None) -> bool:
     """Classify one resource from the catalog. Returns False if it is unknown."""
     catalog = catalog or load_catalog()
+
+    if res.origin == "service":
+        entry = load_services()["services"].get(res.name)
+        if entry is None:
+            return False                                # unknown host: listed, never guessed
+        _apply(res, entry, catalog, by="services", confidence="high")
+        res.service, res.company = entry["name"], entry["company"]
+        res.company_country, res.company_zone = entry["country"], entry["zone"]
+        return True
 
     if res.origin == "module":
         slug = res.type.split(":", 1)[1]
@@ -73,14 +87,19 @@ def classify(analysis: Analysis, llm=None) -> list[Resource]:
     catalog = load_catalog()
     unknown = [r for r in analysis.resources if not classify_resource(r, catalog)]
 
-    if unknown and llm is not None and llm.available:
-        _classify_with_llm(unknown, catalog, llm)
+    infrastructure_unknown = [r for r in unknown if r.origin != "service"]
+    if infrastructure_unknown and llm is not None and llm.available:
+        _classify_with_llm(infrastructure_unknown, catalog, llm)
 
     still_unknown = [r for r in analysis.resources if r.level is None]
     for r in still_unknown:
         r.confidence = "none"
         r.classified_by = "none"
-        r.note = r.note or "Not in the catalog: excluded from the score."
+        if r.origin == "service":
+            r.note = r.note or ("External host not in the services catalog: owner and jurisdiction "
+                                "not assessed, excluded from the score.")
+        else:
+            r.note = r.note or "Not in the catalog: excluded from the score."
     return still_unknown
 
 

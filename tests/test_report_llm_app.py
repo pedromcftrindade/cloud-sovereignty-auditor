@@ -112,6 +112,27 @@ def test_streamlit_app_runs_end_to_end(monkeypatch):
     assert any("Lock-in report: loja-simples" in t.value for t in at.title)
 
 
+def test_streamlit_app_shows_services_of_mixed_example(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EXITPILOT_OFFLINE", "1")
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    at = AppTest.from_file("../app.py", default_timeout=60)
+    at.run()
+    at.selectbox[0].select("loja-mista").run()
+    at.button[0].click().run()
+    assert not at.exception
+    values = [m.value for m in at.metric]
+    assert "62/100" in values and "12/14" in values
+    assert any("Third-party services" in s.value for s in at.subheader)
+
+    at.button(key="migrate").click().run()                       # phase 2
+    assert not at.exception
+    values = [m.value for m in at.metric]
+    assert "82/100" in values and "0/14" in values
+    assert any("Wave 3" in s.value for s in at.subheader)
+
+
 def test_llm_parses_sdk_response_and_caches_it(tmp_path):
     """Simulates the mistralai SDK response object (resp.choices[0].message.content)."""
     from types import SimpleNamespace

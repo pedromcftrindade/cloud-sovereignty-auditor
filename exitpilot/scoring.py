@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .model import Resource
+from .model import PROVIDER_NAMES, Resource
+from .regions import EU_PROVIDERS, US_PROVIDERS
 
 
 @dataclass
@@ -59,3 +60,55 @@ def compute_score(resources: list[Resource]) -> Score:
 def score_by_provider(resources: list[Resource]) -> dict[str, Score]:
     providers = sorted({r.provider for r in resources})
     return {p: compute_score([r for r in resources if r.provider == p]) for p in providers}
+
+
+# ---------------------------------------------------------------- jurisdiction exposure
+# The score above measures how hard it is to leave (technical lock-in). It does not look at
+# who controls each dependency. Exposure answers that second question: of the dependencies
+# that count, how many are controlled by a company headquartered outside the EU?
+
+@dataclass
+class Exposure:
+    total: int                                     # dependencies looked at (counted resources)
+    outside_eu: int                                # controlled by a company headquartered outside the EU
+    in_eu: int
+    unknown: int                                   # company or jurisdiction not known
+    companies: dict[str, int] = field(default_factory=dict)   # company -> dependencies outside the EU
+
+    @property
+    def label(self) -> str:
+        if self.total == 0:
+            return "n/a"
+        return f"{self.outside_eu} of {self.total} controlled outside the EU"
+
+
+def company_of(res: Resource) -> tuple[Optional[str], Optional[str]]:
+    """(company, zone of its headquarters) for any resource, Terraform or service.
+
+    An explicit company (services, or the projection made by migrate.py) wins over the provider."""
+    if res.origin == "service" or res.company_zone:
+        return res.company, res.company_zone
+    if res.provider in US_PROVIDERS:
+        return PROVIDER_NAMES.get(res.provider, res.provider), "Outside Europe"
+    if res.provider in EU_PROVIDERS:
+        return EU_PROVIDERS[res.provider]
+    return None, None
+
+
+def compute_exposure(resources: list[Resource]) -> Exposure:
+    counted = counted_resources(resources)
+    outside, inside, unknown = 0, 0, 0
+    companies: dict[str, int] = {}
+    for res in counted:
+        company, zone = company_of(res)
+        if zone == "EU":
+            inside += 1
+        elif zone in ("Outside Europe", "Europe (non-EU)"):
+            outside += 1
+            companies[company or "?"] = companies.get(company or "?", 0) + 1
+        else:
+            unknown += 1
+    unknown += sum(1 for r in resources if r.origin == "service" and r.level is None)  # unknown hosts
+    total = len(counted) + sum(1 for r in resources if r.origin == "service" and r.level is None)
+    companies = dict(sorted(companies.items(), key=lambda kv: (-kv[1], kv[0])))
+    return Exposure(total=total, outside_eu=outside, in_eu=inside, unknown=unknown, companies=companies)

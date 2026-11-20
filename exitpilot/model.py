@@ -15,28 +15,47 @@ PROVIDER_PREFIXES = {
     "aws": "aws",
     "azurerm": "azure",
     "google": "gcp",
+    "leaseweb": "leaseweb",      # target of phase 2 (migrate.py), so migrated code can be re-analysed
 }
 
 PROVIDER_NAMES = {
     "aws": "Amazon Web Services",
     "azure": "Microsoft Azure",
     "gcp": "Google Cloud",
+    "leaseweb": "Leaseweb",
+    "saas": "Third-party services",
     "other": "Other",
 }
 
 
 @dataclass
 class Resource:
-    """One piece of infrastructure (a Terraform `resource` block or a remote module)."""
+    """One piece of infrastructure.
 
-    provider: str                      # "aws" | "azure" | "gcp" | "other"
-    type: str                          # e.g. "aws_db_instance" or "module:vpc"
-    name: str                          # name chosen by the user, e.g. "db"
-    file: str                          # file where it was declared (relative path)
+    Three origins share this structure:
+      * "resource": a Terraform `resource` block (parser.py)
+      * "module":   a remote Terraform module, estimated from its name (parser.py)
+      * "service":  a third-party service the application really uses, found in
+                    config files, code, dependencies, images or network traffic
+                    (services.py). type is "service" and name is the service id
+                    from services.json, or the raw host when it is not known.
+    """
+
+    provider: str                      # "aws" | "azure" | "gcp" | "saas" | "other"
+    type: str                          # e.g. "aws_db_instance", "module:vpc" or "service"
+    name: str                          # name chosen by the user ("db") or service id ("sendgrid")
+    file: str                          # file where it was declared / first seen (relative path)
     config: dict[str, Any] = field(default_factory=dict, repr=False)
     depends_on: list[str] = field(default_factory=list)   # ["aws_security_group.web", ...]
     region: Optional[str] = None       # resolved region/location, None if unknown
-    origin: str = "resource"           # "resource" | "module"
+    origin: str = "resource"           # "resource" | "module" | "service"
+
+    # Only for origin "service" (filled by services.py and the classifier)
+    service: Optional[str] = None      # display name, e.g. "SendGrid"
+    company: Optional[str] = None      # company that controls the service, e.g. "Twilio"
+    company_country: Optional[str] = None   # where that company is headquartered
+    company_zone: Optional[str] = None      # "EU" | "Europe (non-EU)" | "Outside Europe"
+    evidence: list[dict[str, Any]] = field(default_factory=list)  # [{"file", "line", "kind", "detail"}]
 
     # Filled in by the classifier
     category: Optional[str] = None     # e.g. "database"

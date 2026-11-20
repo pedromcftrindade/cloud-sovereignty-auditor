@@ -15,8 +15,9 @@ from dotenv import load_dotenv
 from exitpilot.analysis import (LEVEL_COLOURS, SUPPORT_COLOUR, UNKNOWN_COLOUR, analyse_folder,
                                 safe_extract_zip, to_dot)
 from exitpilot.llm import MistralClient
+from exitpilot.migrate import migration_zip, plan_migration
 from exitpilot.model import PROVIDER_NAMES
-from exitpilot.report import ranked_main_resources
+from exitpilot.report import ranked_main_resources, service_rows
 
 load_dotenv()  # reads MISTRAL_API_KEY from a local .env file (never committed)
 
@@ -40,13 +41,15 @@ def run_analysis(source_dir: Path, project_name: str, use_ai: bool):
 
 # ------------------------------------------------------------------ sidebar
 st.sidebar.title("🧭 ExitPilot")
-st.sidebar.caption("How locked-in is your cloud? A sovereignty report for your infrastructure code.")
+st.sidebar.caption("How locked-in is your cloud? A sovereignty report for your infrastructure code "
+                   "and the third-party services your application really uses.")
 
 mode = st.sidebar.radio("Infrastructure to analyse", ["Example", "Upload"], horizontal=True)
 examples = sorted(p.name for p in EXAMPLES.iterdir() if p.is_dir()) if EXAMPLES.exists() else []
 example = st.sidebar.selectbox("Example", examples, disabled=(mode != "Example"))
 uploads = st.sidebar.file_uploader(
-    "Terraform files (.tf) or a .zip of the project", type=["tf", "zip"],
+    "A .zip of the project (best), or single files: Terraform, docker-compose, .env, requirements, code",
+    type=["zip", "tf", "yml", "yaml", "env", "json", "txt", "toml", "py", "js", "ts", "html"],
     accept_multiple_files=True, disabled=(mode != "Upload"),
 )
 
@@ -55,6 +58,7 @@ llm_status = get_llm().status
 st.sidebar.caption(llm_status if use_ai else "AI disabled: template text only.")
 
 if st.sidebar.button("Analyse", type="primary", width="stretch"):
+    st.session_state.pop("migration", None)          # a new analysis invalidates the old plan
     if mode == "Example" and example:
         st.session_state["result"] = run_analysis(EXAMPLES / example, example, use_ai)
     elif mode == "Upload" and uploads:
@@ -77,22 +81,28 @@ result = st.session_state.get("result")
 if result is None:
     st.title("Cloud lock-in report")
     st.write(
-        "ExitPilot reads your infrastructure code (Terraform for AWS, Azure or Google Cloud), "
-        "measures how dependent you are on each provider and shows the European alternatives. "
-        "Choose an example on the left and press **Analyse**."
+        "ExitPilot reads your infrastructure code (Terraform for AWS, Azure or Google Cloud) **and** the "
+        "third-party services your application really uses (configuration, code, dependencies, container "
+        "images, network traffic). It measures how locked-in you are, who controls each dependency and "
+        "shows the European alternatives. Choose an example on the left and press **Analyse**."
     )
     st.stop()
 
 analysis, score, report = result.analysis, result.score, result.report
 st.title(f"Lock-in report: {report.project_name}")
 
-c1, c2, c3, c4 = st.columns(4)
+exposure = result.exposure
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Sovereignty score", "n/a" if score.value is None else f"{score.rounded}/100",
           help="S = 100 x (1 - N / (3 x R)). 100 = no lock-in.", border=True)
 c2.metric("Lock-in", score.label.split()[0] if score.value is not None else "n/a", border=True)
-c3.metric("Main resources", score.counted,
-          help="Resources that enter the score (support configuration is left out).", border=True)
-c4.metric("Not fully analysed", len(result.unknown) + len(analysis.errors)
+c3.metric("Controlled outside the EU",
+          "n/a" if not exposure or exposure.total == 0 else f"{exposure.outside_eu}/{exposure.total}",
+          help="Dependencies controlled by a company headquartered outside the EU, wherever its servers are.",
+          border=True)
+c4.metric("Main resources", score.counted,
+          help="Resources and services that enter the score (support configuration is left out).", border=True)
+c5.metric("Not fully analysed", len(result.unknown) + len(analysis.errors)
           + sum(1 for r in analysis.resources if r.origin == "module"), border=True)
 
 if len(result.by_provider) > 1:
@@ -131,6 +141,15 @@ with tab_inventory:
     ]
     st.subheader("Main resources")
     st.dataframe(rows, width="stretch", hide_index=True)
+    services = service_rows(analysis)
+    if services:
+        st.subheader("Third-party services the application uses")
+        st.caption("Zone = where the company is headquartered. Evidence = where we found it "
+                   "(config, code, dependency, image or observed traffic). Secret values are never stored.")
+        st.dataframe([{"service": s["service"], "company": s["company"], "headquarters": s["country"],
+                       "zone": s["zone"], "category": s["category"], "level": s["level"],
+                       "verified": s["verified"], "evidence": s["evidence"]} for s in services],
+                     width="stretch", hide_index=True)
     st.subheader("Support configuration and unclassified")
     other = [
         {"resource": r.address, "category": r.category, "level": r.level, "note": r.note, "file": r.file}
@@ -144,6 +163,49 @@ with tab_json:
     st.code(ir, language="json")
     st.download_button("Download JSON", ir, file_name="infrastructure.json", mime="application/json")
 
+# ------------------------------------------------------------------ phase 2: migration
 st.divider()
-st.button("Generate migration plan to Leaseweb (phase 2)", disabled=True,
-          help="Phase 2: translate this infrastructure to Leaseweb, validated with OpenTofu.")
+st.header("Phase 2: migration plan to Leaseweb")
+st.caption("Chooses a European target for every dependency, orders the work in waves, generates the "
+           "Terraform, cloud-init, docker-compose and environment files, and projects the result. "
+           "Nothing is applied: it is a proposal to review.")
+if st.button("Generate migration plan", key="migrate", type="primary"):
+    st.session_state["migration"] = plan_migration(result)
+
+migration = st.session_state.get("migration")
+if migration is not None and migration.project == report.project_name:
+    b, a = migration.before, migration.after
+    eb, ea = migration.exposure_before, migration.exposure_after
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Sovereignty score after the plan", "n/a" if a.rounded is None else f"{a.rounded}/100",
+              delta=None if a.rounded is None or b.rounded is None else a.rounded - b.rounded, border=True)
+    m2.metric("Controlled outside the EU after the plan", f"{ea.outside_eu}/{ea.total}",
+              delta=ea.outside_eu - eb.outside_eu, delta_color="inverse", border=True)
+    m3.metric("Steps", len([s for s in migration.steps if s.kind != "keep"]),
+              help="Steps that need work (already European dependencies are kept).", border=True)
+    st.caption("Projected values: they assume every step is done. Self-hosting lowers lock-in but adds "
+               "operations work (updates, backups, monitoring).")
+
+    for wave, title in [(1, "Wave 1: quick wins"), (2, "Wave 2: managed services"), (3, "Wave 3: deep changes")]:
+        steps = [s for s in migration.steps_in_wave(wave)]
+        if steps:
+            st.subheader(title)
+            st.dataframe([{"today": s.today, "target": s.target, "level": f"{s.level_before} -> {s.level_after}",
+                           "generated": ", ".join(s.generated) or "-", "manual work": " ".join(s.actions) or "-"}
+                          for s in steps], width="stretch", hide_index=True)
+    kept = [s.today for s in migration.steps if s.kind == "keep"]
+    if kept:
+        st.caption("Already European (kept): " + "; ".join(kept))
+
+    st.subheader("Checks")
+    for check in migration.checks:
+        icon = {"passed": "✅", "failed": "❌"}.get(check.status, "⏸️")
+        st.markdown(f"{icon} **{check.name}** ({check.status}): {check.detail}")
+
+    st.subheader("Generated files")
+    for path, text in sorted(migration.files.items()):
+        with st.expander(path):
+            language = {"tf": "hcl", "yaml": "yaml", "yml": "yaml", "md": "markdown"}.get(path.rsplit(".", 1)[-1], "bash")
+            st.code(text, language=language)
+    st.download_button("Download the migration (.zip)", migration_zip(migration),
+                       file_name=f"{migration.project}-migration.zip", mime="application/zip")
