@@ -1,0 +1,113 @@
+"""Glue: folder -> parse -> classify -> score -> report. Also builds the dependency graph."""
+
+from __future__ import annotations
+
+import io
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .classifier import classify
+from .model import Analysis, Resource
+from .parser import parse_folder
+from .report import Report, generate_report
+from .scoring import Score, compute_score, score_by_provider
+
+LEVEL_COLOURS = {0: "#2e7d32", 1: "#7cb342", 2: "#f9a825", 3: "#c62828"}
+SUPPORT_COLOUR = "#9e9e9e"
+UNKNOWN_COLOUR = "#5c6bc0"
+
+
+@dataclass
+class Result:
+    analysis: Analysis
+    unknown: list[Resource]
+    score: Score
+    by_provider: dict[str, Score]
+    report: Report
+
+
+def analyse_folder(folder: str | Path, llm=None, project_name: Optional[str] = None) -> Result:
+    analysis = parse_folder(folder)
+    unknown = classify(analysis, llm=llm)
+    report = generate_report(analysis, unknown, llm=llm, project_name=project_name or Path(folder).name)
+    return Result(analysis=analysis, unknown=unknown, score=compute_score(analysis.resources),
+                  by_provider=score_by_provider(analysis.resources), report=report)
+
+
+def to_dot(analysis: Analysis, include_support: bool = False) -> str:
+    """Graphviz DOT text: one box per resource, coloured by lock-in level, arrows = dependencies."""
+    shown = [r for r in analysis.resources if include_support or not r.support]
+    shown_addresses = {r.address for r in shown}
+    lines = ['digraph G {', '  rankdir=LR;', '  bgcolor="transparent";',
+             '  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, fontcolor="white"];']
+    for r in shown:
+        colour = SUPPORT_COLOUR if r.support else LEVEL_COLOURS.get(r.level, UNKNOWN_COLOUR)
+        font = "black" if (not r.support and r.level in (1, 2)) else "white"   # readable on light fills
+        level = "?" if r.level is None else r.level
+        label = f"{r.type}\\n{r.name} (level {level})"
+        lines.append(f'  "{r.address}" [label="{label}", fillcolor="{colour}", fontcolor="{font}"];')
+    direct = set()
+    for r in shown:
+        for dep in r.depends_on:
+            if dep in shown_addresses:
+                direct.add(frozenset((r.address, dep)))
+                lines.append(f'  "{r.address}" -> "{dep}";')
+    if not include_support:
+        # Main resources are often linked only through support resources
+        # (instance <- target group attachment -> target group <- listener -> load balancer).
+        # Show those indirect links as dashed lines so the map stays readable.
+        for a, b in sorted(_links_through_support(analysis)):
+            if frozenset((a, b)) not in direct:
+                lines.append(f'  "{a}" -> "{b}" [style=dashed, dir=none, color="#888888"];')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _links_through_support(analysis: Analysis) -> set[tuple[str, str]]:
+    by_address = {r.address: r for r in analysis.resources}
+    neighbours: dict[str, set[str]] = {a: set() for a in by_address}
+    for r in analysis.resources:
+        for dep in r.depends_on:
+            if dep in by_address:
+                neighbours[r.address].add(dep)
+                neighbours[dep].add(r.address)
+    links = set()
+    for start, res in by_address.items():
+        if res.support:
+            continue
+        seen, frontier = {start}, [start]
+        while frontier:                      # walk only through support resources
+            node = frontier.pop()
+            for nxt in neighbours[node]:
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                if by_address[nxt].support:
+                    # shared network pieces (VPC, subnets) would connect everything to everything
+                    if by_address[nxt].category != "network":
+                        frontier.append(nxt)
+                elif nxt != start:
+                    links.add(tuple(sorted((start, nxt))))
+    return links
+
+
+def safe_extract_zip(data: bytes, dest: str | Path, max_files: int = 2000, max_bytes: int = 50_000_000) -> int:
+    """Extract an uploaded .zip without letting paths escape `dest` (zip-slip) or filling the disk."""
+    dest = Path(dest).resolve()
+    count, total = 0, 0
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            target = (dest / info.filename).resolve()
+            if dest not in target.parents:
+                continue                      # "../../etc/passwd" and absolute paths are skipped
+            count += 1
+            total += info.file_size
+            if count > max_files or total > max_bytes:
+                raise ValueError("Archive too large for this demo.")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info))
+    return count
