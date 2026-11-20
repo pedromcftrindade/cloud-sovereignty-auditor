@@ -78,8 +78,10 @@ The **Market study** tab (and `python -m exitpilot <folder> --market Lisbon`) co
 - **Proximity**: distance from the company's city to the provider's nearest EU data centre and the theoretical
   minimum round trip over fibre (about 1 ms per 100 km).
 - **Managed services**: which of the managed services the infrastructure uses the provider offers.
-- **Automated migration** (weight 0 by default, so the study stays neutral): whether ExitPilot already generates the
-  provider's Terraform.
+- **Automated migration**: whether ExitPilot already generates and checks the migration for the provider (phase 2,
+  today Leaseweb). A ready, validated migration is cheaper and less risky, so by default it weighs as much as
+  proximity or managed services (40 price, 30 proximity, 30 managed services, 30 automation). Set it to 0 for a
+  study that ignores ExitPilot's own automation.
 
 `score = 100 x (wp x P + wd x D + wc x C + wa x A) / (wp + wd + wc + wa)`. The weights are sliders in the app.
 Providers whose plans cannot be ordered today are listed but never recommended. The AI can write the recommendation
@@ -139,6 +141,17 @@ streamlit run app.py
 Open http://localhost:8501, choose an example and press **Analyse**. The app also works without a
 key (template text) and offline (`EXITPILOT_OFFLINE=1`, cached AI answers only). To analyse your
 own project, upload a `.zip` of it.
+
+**New web interface** (HTML, CSS and JavaScript, no extra dependency), with the AI's briefing and analysis in
+front: an executive briefing, what to change, every dependency with its AI analysis, security and waste, the
+market study with live weights, and the exit plan with its generated files.
+
+```bash
+python -m exitpilot.webapp            # then open http://127.0.0.1:8000
+```
+
+It listens on this machine only by default (`--host 0.0.0.0` to share it on a network you trust). Same engine,
+same `.env`: the Streamlit app keeps working.
 
 From the terminal:
 

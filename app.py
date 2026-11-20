@@ -16,7 +16,7 @@ from exitpilot.analysis import (LEVEL_COLOURS, SUPPORT_COLOUR, UNKNOWN_COLOUR, a
                                 safe_extract_zip, to_dot)
 from exitpilot.export import build_export
 from exitpilot.llm import make_llm
-from exitpilot.market import CITIES, ai_recommendation, labels, map_points, market_markdown
+from exitpilot.market import DEFAULT_WEIGHTS, CITIES, ai_recommendation, labels, map_points, market_markdown
 from exitpilot.market import study as market_study
 from exitpilot.migrate import migration_zip, plan_migration
 from exitpilot.model import PROVIDER_NAMES
@@ -198,11 +198,13 @@ with tab_market:
                                     disabled=not analysis.waste)
     with q2:
         w1, w2, w3, w4 = st.columns(4)
-        w_price = w1.slider("Price", 0, 100, 40, key="mk_wp")
-        w_prox = w2.slider("Proximity", 0, 100, 30, key="mk_wd")
-        w_cov = w3.slider("Managed services", 0, 100, 30, key="mk_wc")
-        w_auto = w4.slider("Automated migration", 0, 100, 0, key="mk_wa",
-                           help="Weight for providers ExitPilot can already generate Terraform for (phase 2).")
+        w_price = w1.slider("Price", 0, 100, int(DEFAULT_WEIGHTS["price"]), key="mk_wp")
+        w_prox = w2.slider("Proximity", 0, 100, int(DEFAULT_WEIGHTS["proximity"]), key="mk_wd")
+        w_cov = w3.slider("Managed services", 0, 100, int(DEFAULT_WEIGHTS["coverage"]), key="mk_wc")
+        w_auto = w4.slider("Automated migration", 0, 100, int(DEFAULT_WEIGHTS["automation"]), key="mk_wa",
+                           help="Weight for providers ExitPilot already generates and checks the migration for "
+                                "(phase 2: today Leaseweb). A ready, validated migration is cheaper and less risky. "
+                                "Set it to 0 for a study that ignores ExitPilot's own automation.")
     weights = {"price": w_price, "proximity": w_prox, "coverage": w_cov, "automation": w_auto}
     ms = market_study(analysis, city=city, weights=weights, skip_waste=skip_waste_mk and bool(analysis.waste),
                       include_basic=include_basic)

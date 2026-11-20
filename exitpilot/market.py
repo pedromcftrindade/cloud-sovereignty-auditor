@@ -16,7 +16,12 @@ and compares the providers in providers.json on three facts, all computed in Pyt
     D = (nearest + 50) / (this distance + 50)    (1 for the closest; +50 km avoids dividing by ~0)
     C = managed services covered / needed         (1 when nothing managed is needed)
     A = 1 if ExitPilot already generates Terraform for the provider (phase 2), else 0
-    wp, wd, wc, wa = the weights chosen by the user (wa is 0 by default: the study stays neutral)
+    wp, wd, wc, wa = the weights chosen by the user (DEFAULT_WEIGHTS: 40, 30, 30, 30)
+
+Why automation has a weight by default: a provider for which the migration is already generated and
+checked (Terraform, cloud-init, docker-compose: see migrate.py) is cheaper and less risky to move to, so
+it counts as much as proximity or managed services. It is a visible weight, not a hidden bonus: set it
+to 0 in the app or with weights={"automation": 0} for a study that ignores ExitPilot's own automation.
 
 Providers whose plans cannot be ordered today are listed, but never recommended. The AI (optional)
 only writes the recommendation text from these facts; its pick must be one of the providers.
@@ -37,6 +42,8 @@ from .model import Analysis
 PROVIDERS_PATH = Path(__file__).with_name("providers.json")
 DEFAULT_SIZE = (2, 4.0)                       # vCPU, GB RAM when the size is not known
 SERVICES_HOST = (2, 8.0)                      # one machine for the self-hosted services (see migrate.py)
+# Default weights of the score (see the module docstring for why automation is not 0)
+DEFAULT_WEIGHTS = {"price": 40.0, "proximity": 30.0, "coverage": 30.0, "automation": 30.0}
 
 # Where the company is (for proximity). Approximate city centres.
 CITIES: dict[str, tuple[float, float]] = {
@@ -213,7 +220,7 @@ def study(analysis: Analysis, city: str = "Lisbon", weights: Optional[dict[str, 
           skip_waste: bool = True, include_basic: bool = False, eu_only: bool = True) -> MarketStudy:
     data = load_providers()
     where = CITIES.get(city, CITIES["Lisbon"])
-    weights = {"price": 40.0, "proximity": 30.0, "coverage": 30.0, "automation": 0.0} | (weights or {})
+    weights = DEFAULT_WEIGHTS | (weights or {})
     machines = machines_needed(analysis, skip_waste)
     needed = capabilities_needed(analysis, skip_waste)
     offers: list[Offer] = []

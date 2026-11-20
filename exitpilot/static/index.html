@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExitPilot · Cloud sovereignty report</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%231B263B' stroke='%23778DA9' stroke-width='2'/%3E%3Cpath d='M16 6l4 10-4 10-4-10z' fill='%23E0E1DD'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" id="brand" type="button" aria-label="ExitPilot home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14"/><path d="M16 6l4 10-4 10-4-10z"/></svg>
+      <span>ExitPilot</span>
+    </button>
+    <div class="topbar-right">
+      <button class="ghost hidden" id="new-analysis" type="button">New analysis</button>
+      <span class="ai-status" id="ai-status" title="">
+        <span class="dot"></span><span class="label">Checking AI…</span>
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============================================================ HOME -->
+    <section id="home" class="view">
+      <div class="hero">
+        <div class="hero-text">
+          <p class="eyebrow">AI for cloud infrastructure · European sovereignty</p>
+          <h1>How locked-in is your cloud, and <em>who really controls it?</em></h1>
+          <p class="lead">ExitPilot reads your infrastructure code and the services your application really uses,
+            measures how dependent you are on companies outside the EU, and lets an AI explain every dependency
+            in plain words. Then it writes the exit plan.</p>
+          <ol class="steps">
+            <li><span>1</span><div><b>Scan</b><small>Terraform, docker-compose, .env, code, dependencies, traffic</small></div></li>
+            <li><span>2</span><div><b>AI briefing</b><small>Risk, why it matters and what to change, per dependency</small></div></li>
+            <li><span>3</span><div><b>Exit plan</b><small>European alternatives, costs and the files to migrate</small></div></li>
+          </ol>
+        </div>
+
+        <div class="start card">
+          <h2>Start an analysis</h2>
+          <p class="muted small">Pick an example project, or drop a .zip of your own.</p>
+          <div class="examples" id="examples" role="radiogroup" aria-label="Example projects"></div>
+
+          <label class="dropzone" id="dropzone">
+            <input type="file" id="file" multiple hidden
+                   accept=".zip,.tf,.yml,.yaml,.env,.json,.txt,.toml,.py,.js,.ts,.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+            <span id="dropzone-text"><b>Drop a .zip</b> (best) or single files: Terraform, docker-compose, .env, requirements, code</span>
+          </label>
+
+          <div class="ai-toggle">
+            <label class="switch">
+              <input type="checkbox" id="use-ai" checked>
+              <span class="slider"></span>
+            </label>
+            <div>
+              <b>Use AI</b> <span class="muted small" id="ai-toggle-model"></span>
+              <div class="muted small" id="ai-toggle-status"></div>
+            </div>
+          </div>
+
+          <button class="primary big" id="analyse" type="button" disabled>Analyse</button>
+          <p class="muted small center" id="start-hint">Choose an example to start.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ RESULTS -->
+    <section id="results" class="view hidden">
+      <div class="results-head">
+        <div>
+          <p class="eyebrow" id="r-eyebrow">Lock-in report</p>
+          <h1 id="r-title">Project</h1>
+        </div>
+        <div class="head-actions">
+          <button class="ghost" type="button" data-download="report.md">Report (.md)</button>
+          <button class="ghost" type="button" data-download="analysis.json">analysis.json</button>
+        </div>
+      </div>
+
+      <div class="metrics" id="metrics"></div>
+      <div class="metrics" id="by-provider"></div>
+      <div id="alerts"></div>
+      <article class="card summary" id="summary"></article>
+      <p class="muted small" id="ai-caption"></p>
+
+      <nav class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-tab="report" class="active">Report</button>
+        <button role="tab" data-tab="market">Market study</button>
+        <button role="tab" data-tab="map">Dependency map</button>
+        <button role="tab" data-tab="inventory">Inventory</button>
+        <button role="tab" data-tab="json">Common JSON</button>
+      </nav>
+
+      <div class="tab-panel" id="tab-report"></div>
+      <div class="tab-panel hidden" id="tab-market"></div>
+      <div class="tab-panel hidden" id="tab-map"></div>
+      <div class="tab-panel hidden" id="tab-inventory"></div>
+      <div class="tab-panel hidden" id="tab-json"></div>
+
+      <section class="phase2" id="phase2"></section>
+    </section>
+  </main>
+
+  <div class="overlay hidden" id="loading" role="status" aria-live="polite">
+    <div class="loading-card card">
+      <div class="spinner" aria-hidden="true"></div>
+      <h2 id="loading-title">Analysing…</h2>
+      <ol class="loading-steps" id="loading-steps"></ol>
+      <p class="muted small" id="loading-note"></p>
+      <p class="elapsed" id="loading-elapsed">0 s</p>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast" role="alert"></div>
+
+  <!-- Map (Market study) and graph (Dependency map). If they cannot load, the page says so and shows the data. -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3.4.0/lib/viz-standalone.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
