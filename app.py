@@ -112,6 +112,11 @@ if len(result.by_provider) > 1:
     for col, (prov, s) in zip(cols, result.by_provider.items()):
         col.metric(PROVIDER_NAMES.get(prov, prov), "n/a" if s.value is None else f"{s.rounded}/100")
 
+if analysis.waste:
+    left_out = sum(1 for w in analysis.waste if w.exclude_from_migration)
+    st.info(f"🧹 **{len(analysis.waste)} suspected waste item(s)** look unused ({left_out} can be left out of the "
+            "migration). See *Suspected waste* in the report or the Inventory tab. Nothing is deleted automatically.")
+
 st.caption(f"🤖 Report text written by AI ({get_llm().label}), numbers computed by ExitPilot."
            if report.ai_used else "Report text from template (AI not used). All numbers computed by ExitPilot.")
 
@@ -152,6 +157,13 @@ with tab_inventory:
                        "zone": s["zone"], "category": s["category"], "level": s["level"],
                        "verified": s["verified"], "evidence": s["evidence"]} for s in services],
                      width="stretch", hide_index=True)
+    if analysis.waste:
+        st.subheader("Suspected waste (review before deleting)")
+        st.dataframe([{"item": w.address, "what": w.title, "why": w.reason, "confidence": w.confidence,
+                       "migration": "left out" if w.exclude_from_migration else "clean up only",
+                       "where": "; ".join(e["file"] + (f":{e['line']}" if e.get("line") else "")
+                                          for e in w.evidence[:3])}
+                      for w in analysis.waste], width="stretch", hide_index=True)
     st.subheader("Support configuration and unclassified")
     other = [
         {"resource": r.address, "category": r.category, "level": r.level, "note": r.note, "file": r.file}
@@ -177,8 +189,11 @@ st.header("Phase 2: migration plan to Leaseweb")
 st.caption("Chooses a European target for every dependency, orders the work in waves, generates the "
            "Terraform, cloud-init, docker-compose and environment files, and projects the result. "
            "Nothing is applied: it is a proposal to review.")
+exclude_waste = st.checkbox("Leave suspected waste out of the migration", value=True, key="exclude_waste",
+                            disabled=not analysis.waste,
+                            help="Unused disks, IPs, SDKs... are listed for clean-up instead of being moved.")
 if st.button("Generate migration plan", key="migrate", type="primary"):
-    st.session_state["migration"] = plan_migration(result)
+    st.session_state["migration"] = plan_migration(result, exclude_waste=exclude_waste and bool(analysis.waste))
 
 migration = st.session_state.get("migration")
 if migration is not None and migration.project == report.project_name:
@@ -189,18 +204,33 @@ if migration is not None and migration.project == report.project_name:
               delta=None if a.rounded is None or b.rounded is None else a.rounded - b.rounded, border=True)
     m2.metric("Controlled outside the EU after the plan", f"{ea.outside_eu}/{ea.total}",
               delta=ea.outside_eu - eb.outside_eu, delta_color="inverse", border=True)
-    m3.metric("Steps", len([s for s in migration.steps if s.kind != "keep"]),
+    m3.metric("Steps", len([s for s in migration.steps if s.kind not in ("keep", "drop")]),
               help="Steps that need work (already European dependencies are kept).", border=True)
     st.caption("Projected values: they assume every step is done. Self-hosting lowers lock-in but adds "
                "operations work (updates, backups, monitoring).")
 
+    def _lvl(value):
+        return "?" if value is None else value
+
+    def _rows(steps):
+        return [{"today": s.today, "target": s.target, "level": f"{_lvl(s.level_before)} -> {_lvl(s.level_after)}",
+                 "generated": ", ".join(s.generated) or "-", "manual work": " ".join(s.actions) or "-"}
+                for s in steps]
+
+    decisions = [s for s in migration.steps if s.kind == "decision"]
+    if decisions:
+        st.subheader("Decisions needed first")
+        st.dataframe(_rows(decisions), width="stretch", hide_index=True)
     for wave, title in [(1, "Wave 1: quick wins"), (2, "Wave 2: managed services"), (3, "Wave 3: deep changes")]:
-        steps = [s for s in migration.steps_in_wave(wave)]
+        steps = [s for s in migration.steps_in_wave(wave) if s.kind != "decision"]
         if steps:
             st.subheader(title)
-            st.dataframe([{"today": s.today, "target": s.target, "level": f"{s.level_before} -> {s.level_after}",
-                           "generated": ", ".join(s.generated) or "-", "manual work": " ".join(s.actions) or "-"}
-                          for s in steps], width="stretch", hide_index=True)
+            st.dataframe(_rows(steps), width="stretch", hide_index=True)
+    dropped = [s for s in migration.steps if s.kind == "drop"]
+    if dropped:
+        st.subheader("Not migrated: suspected waste")
+        st.dataframe([{"item": s.today, "why": " ".join(s.actions)} for s in dropped],
+                     width="stretch", hide_index=True)
     kept = [s.today for s in migration.steps if s.kind == "keep"]
     if kept:
         st.caption("Already European (kept): " + "; ".join(kept))

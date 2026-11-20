@@ -10,6 +10,7 @@ services) this module:
        eu_saas            a provider headquartered in the EU, taken from services.json
        keep               already European: nothing to do
        decision           no safe automatic target: a person has to decide
+       drop               suspected waste (waste.py): not migrated, to review and delete
   2. orders the work in waves by effort ("effort" in catalog.json);
   3. generates the files for what can be automated:
        terraform/main.tf            Leaseweb instances (provider leaseweb/leaseweb)
@@ -52,6 +53,7 @@ from .parser import parse_text
 from .regions import EU_PROVIDERS
 from .scoring import Exposure, Score, compute_exposure, compute_score, counted_resources
 from .services import collect_services, load_services
+from .waste import excluded_addresses
 
 LEASEWEB = ("Leaseweb", "EU")              # company and zone of its headquarters (Netherlands)
 INTERNAL_REGISTRY = "registry.internal"    # your own mirror (e.g. Harbor) inside the private network
@@ -235,6 +237,8 @@ class Migration:
     exposure_before: Exposure
     exposure_after: Exposure
     checks: list[Check] = field(default_factory=list)
+    waste: list = field(default_factory=list)          # WasteFinding list from the analysis (waste.py)
+    waste_excluded: bool = False                       # True: suspected waste was left out of the plan
 
     @property
     def plan_markdown(self) -> str:
@@ -321,6 +325,14 @@ def _with_ai(step: Step, res: Resource) -> Step:
     return step
 
 
+def _drop_step(res: Resource, reason: str, disabled: bool) -> Step:
+    target = ("Not migrated: it creates nothing today" if disabled
+              else "Not migrated: suspected waste (review, then delete)")
+    return Step(address=res.address, today=_today(res), category=res.category or "", kind="drop",
+                target=target, level_before=res.level, level_after=None, company_after=None, zone_after=None,
+                effort="none", wave=0, actions=[reason])
+
+
 def _dependencies(resources: list[Resource]) -> list[Resource]:
     """What the plan covers: counted resources and services, plus unknown hosts."""
     unknown_hosts = [r for r in resources if r.origin == "service" and r.level is None]
@@ -333,8 +345,10 @@ def project(resources: list[Resource], steps: list[Step]) -> list[Resource]:
     by_address = {s.address: s for s in steps}
     projected = []
     for res in resources:
-        new = copy.deepcopy(res)
         step = by_address.get(res.address)
+        if step and step.kind == "drop":                    # left out: it is gone after the plan
+            continue
+        new = copy.deepcopy(res)
         if step and step.kind not in ("keep", "decision"):
             new.level = step.level_after
             new.company, new.company_zone = step.company_after, step.zone_after
@@ -494,7 +508,9 @@ def _app_env(steps: list[Step], resources: list[Resource]) -> Optional[str]:
         lines.append(f"# {step.today} -> {step.target}")
         for var in variables:
             found = True
-            if step.kind in ("keep", "decision"):
+            if step.kind == "drop":
+                lines.append(f"# {var}: remove it (suspected waste, see MIGRATION_PLAN.md)")
+            elif step.kind in ("keep", "decision"):
                 lines.append(f"# {var}: unchanged ({'already European' if step.kind == 'keep' else 'decide first'})")
             elif spec.get("env_host") and "HOST" in var:
                 lines.append(f"{var}={spec['env_host']}")
@@ -555,6 +571,18 @@ def _plan_markdown(m: Migration) -> str:
     if kept:
         add("## Already European (kept)\n")
         add("\n".join(f"- {s.today}" for s in kept))
+        add("")
+
+    if m.waste:
+        add("## Suspected waste: clean up instead of migrating\n")
+        add("These look unused in the analysed files (see the lock-in report). Review each one with the team. "
+            + ("Items marked *left out* are not translated by this plan.\n" if m.waste_excluded else
+               "This plan was generated with every item included.\n"))
+        add("| Item | What | Why | In this plan |\n|---|---|---|---|")
+        dropped = {s.address for s in m.steps if s.kind == "drop"}
+        for w in m.waste:
+            status = "left out" if w.address in dropped else ("included" if w.exclude_from_migration else "clean up only")
+            add(f"| `{w.address}` | {w.title} | {w.reason} | {status} |")
         add("")
 
     add("## Generated files\n")
@@ -647,11 +675,21 @@ def check_tofu(out_dir: Optional[str | Path], run: bool) -> Check:
 
 
 # ------------------------------------------------------------------ public API
-def plan_migration(result) -> Migration:
-    """Build the migration plan for an analysis Result (analysis.py)."""
-    resources = result.analysis.resources
+def plan_migration(result, exclude_waste: bool = False) -> Migration:
+    """Build the migration plan for an analysis Result (analysis.py).
+
+    exclude_waste=True leaves suspected waste (waste.py) out of the plan. Disabled resources
+    (count = 0) are always left out: migrating them would create something that does not exist today.
+    """
+    analysis = result.analysis
+    resources = analysis.resources
+    waste = list(getattr(analysis, "waste", []) or [])
+    reasons = {w.address: w for w in waste}
+    drop = excluded_addresses(analysis) if exclude_waste else set()
+    drop |= {w.address for w in waste if w.kind == "disabled_resource"}
     deps = _dependencies(resources)
-    steps = [_with_ai(_step_for(r), r) for r in deps]
+    steps = [_drop_step(r, reasons[r.address].reason, reasons[r.address].kind == "disabled_resource")
+             if r.address in drop else _with_ai(_step_for(r), r) for r in deps]
     steps.sort(key=lambda s: (s.wave if s.wave else 9, s.kind != "decision", s.today))
     by_address = {r.address: r for r in resources}
 
@@ -691,7 +729,8 @@ def plan_migration(result) -> Migration:
     projected = project(resources, steps)
     migration = Migration(project=result.report.project_name, steps=steps, files=files,
                           before=compute_score(resources), after=compute_score(projected),
-                          exposure_before=compute_exposure(resources), exposure_after=compute_exposure(projected))
+                          exposure_before=compute_exposure(resources), exposure_after=compute_exposure(projected),
+                          waste=waste, waste_excluded=exclude_waste)
     migration.checks = [check_terraform(files), check_sovereignty(files), check_tofu(None, run=False)]
     migration.files["MIGRATION_PLAN.md"] = _plan_markdown(migration)
     return migration

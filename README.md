@@ -34,6 +34,13 @@ into a migration plan to Leaseweb and European alternatives, with the files to s
      **evidence** (file, line, kind). Secret values are never stored, only variable names and hosts.
      Local and private hosts, Docker service names, placeholder domains, comment lines and
      lookalike domains (e.g. `sendgrid.com.evil.io`) are ignored on purpose.
+   - **2c. Suspected waste** (`waste.py`): things that look unused, so you do not pay to migrate them.
+     Terraform: disabled resources (`count = 0`), disks and public IPs attached to nothing, security
+     groups and target groups nothing uses. Application: services whose SDK is installed but never
+     imported and whose variables are set but never read, unused packages, unused `.env` variables.
+     Every finding is a **suspicion to review**: a reference anywhere (resource, module input, output),
+     observed traffic, or a variable read by an SDK on its own (`SENTRY_DSN`...) counts as use. Found by
+     Python, not by the AI: "unused" must be a fact we can show. Phase 2 can leave these items out.
 2. **Classify**: each resource gets a category and a lock-in level:
    - 0: standard, exists everywhere (VMs, disks, font files)
    - 1: compatible with a common standard (S3 API, Kubernetes, SMTP, OCI images)
@@ -120,12 +127,25 @@ runs, with template text and without the AI analysis. `LLM_PROVIDER` chooses the
 
 | `LLM_PROVIDER` | Model | Needs |
 |---|---|---|
-| `mistral` (default) | Mistral's API (a European provider) | `MISTRAL_API_KEY` |
+| `ollama` (our demo) | Mistral 7B on this machine through Ollama's native API (`http://localhost:11434`), the same server as `ollama run mistral` | Ollama running, `ollama pull mistral` |
+| `mistral` (code default) | Mistral's API (a European provider) | `MISTRAL_API_KEY` |
 | `lmstudio` | A model served by LM Studio on this machine (`http://localhost:1234/v1`) | `LLM_MODEL` |
-| `ollama` | A model served by Ollama on this machine (`http://localhost:11434/v1`) | `LLM_MODEL` |
+| `ollama-openai` | Ollama through its OpenAI-compatible endpoint (`http://localhost:11434/v1`) | `LLM_MODEL` |
 | `local` | Any server with an OpenAI-compatible API (set `LLM_BASE_URL`) | `LLM_MODEL` |
 
-With a local model nothing leaves the machine. Example with LM Studio (load the model and start its local
+With a local model nothing leaves the machine. **With Ollama** (what we use in the demo):
+
+```bash
+ollama pull mistral                                   # once
+LLM_PROVIDER=ollama LLM_MODEL=mistral python scripts/check_llm.py
+LLM_PROVIDER=ollama LLM_MODEL=mistral streamlit run app.py
+```
+
+The `ollama` provider uses Ollama's native API so it can set the context window (`LLM_NUM_CTX`, default 8192)
+and JSON mode. Through the OpenAI-compatible endpoint Ollama keeps its smaller default context and cuts longer
+prompts without any error, so the model would miss part of the facts.
+
+Example with LM Studio (load the model and start its local
 server first, with a context of at least 8192 tokens):
 
 ```bash
@@ -153,7 +173,9 @@ Python extracts the facts (parsers, catalogs); the model then works on them in f
 2. **Classifies Terraform resource types** that are not in the catalog.
 3. **Suggests the owner of an unknown host** (`owner_guess`), only when it is sure. It is a suggestion to confirm: the
    host stays "unknown" and out of the score and the exposure until someone adds it to `services.json`.
-4. **Writes the report**: executive summary, top risks and next steps.
+4. **Writes the report**: executive summary, top risks, next steps and **what to change**: up to 6 concrete
+   changes (replace a service with its European option, change a configuration, delete suspected waste), each
+   tied to an item from the facts. Items the AI invents are dropped; without AI the list comes from the catalogs.
 
 What keeps it trustworthy:
 
@@ -192,6 +214,7 @@ python -m pytest -q
 | `casos-dificeis` | Remote and local modules, `count` with a variable, data block, unknown type, a broken file | 44 | 3 of 3 | 100, 0 of 3 |
 | `azure-loja` | Shop on Azure Netherlands: VM, Blob Storage, PostgreSQL, Cosmos DB, Functions | 33 | 5 of 5 | 93, 0 of 5 |
 | `loja-mista` | Terraform on AWS Ireland **plus** the application: docker-compose, `.env.example`, Python code, HTML, Dockerfile, network snapshot. 10 known services, 1 unknown partner API, and traps (local MinIO, private IP, URL in a comment) | 62 | 12 of 14 | 82, 0 of 14 |
+| `loja-lixo` | AWS Ireland + a Python app that grew without clean-ups: a disabled staging server, an unattached 500 GB disk, a reserved IP, an unused security group, Twilio and Mixpanel SDKs never imported, an old Maps URL never read | 64 | 12 of 12 | 8 suspected waste items, 7 left out of the plan |
 
 The projection assumes every step is done. Self-hosting lowers lock-in but adds operations work.
 
@@ -204,6 +227,7 @@ exitpilot/
   model.py                   common representation (Resource, Analysis), shared by 2a and 2b
   parser.py                  2a: Terraform -> common representation (python-hcl2 8.x)
   services.py                2b: config, code, dependencies, images, traffic -> common representation
+  waste.py                   2c: suspected waste (unused resources, SDKs, variables)
   catalog.json               categories, European alternatives, lock-in level per Terraform type
   services.json              third-party services: hosts, packages, company, headquarters, level
   classifier.py              catalog + services lookup, prefixes, modules, validated AI fallback

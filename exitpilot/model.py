@@ -90,20 +90,38 @@ class ParseError:
 
 
 @dataclass
+class WasteFinding:
+    """Something that looks unused (waste.py). Always a suspicion to review, never deleted automatically."""
+
+    kind: str                          # e.g. "unattached_disk", "unused_sdk" (see waste.py)
+    address: str                       # resource / service address, or "env:VAR" for a variable
+    title: str                         # short text for people
+    reason: str                        # why we think it is unused (a fact, from Python)
+    confidence: str                    # "high" | "medium"
+    exclude_from_migration: bool       # True: phase 2 leaves it out (unless the user includes it)
+    evidence: list[dict[str, Any]] = field(default_factory=list)   # [{"file", "line", "detail"}]
+    ai: Optional[dict[str, Any]] = None   # AI suggestion (ai_analysis.py): {"suggestion", "check_first", ...}
+
+
+@dataclass
 class Analysis:
     """Everything we learned from one folder of infrastructure code."""
 
     resources: list[Resource] = field(default_factory=list)
     errors: list[ParseError] = field(default_factory=list)
     files_read: list[str] = field(default_factory=list)
+    waste: list[WasteFinding] = field(default_factory=list)      # filled by waste.py
 
     @property
     def providers(self) -> list[str]:
         return sorted({r.provider for r in self.resources})
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "resources": [r.to_dict() for r in self.resources],
             "errors": [asdict(e) for e in self.errors],
             "files_read": self.files_read,
         }
+        if self.waste:
+            data["suspected_waste"] = [asdict(w) for w in self.waste]
+        return data

@@ -21,6 +21,7 @@ from .parser import parse_folder
 from .report import Report, generate_report
 from .scoring import Exposure, Score, compute_exposure, compute_score, score_by_provider
 from .services import add_services
+from .waste import find_waste
 
 LEVEL_COLOURS = {0: "#2e7d32", 1: "#7cb342", 2: "#f9a825", 3: "#c62828"}
 SUPPORT_COLOUR = "#9e9e9e"
@@ -48,6 +49,7 @@ def analyse_folder(folder: str | Path, llm=None, project_name: Optional[str] = N
     if include_services:
         add_services(analysis, folder)              # 2b: third-party services really used
     unknown = classify(analysis, llm=llm)           # catalogs first, then the AI for what they do not know
+    find_waste(analysis, folder)                    # 2c: suspected waste (facts, found by Python)
     analysed = enrich(analysis, llm) if ai_analysis else 0   # the AI analyses each dependency (JSON)
     report = generate_report(analysis, unknown, llm=llm, project_name=project_name or Path(folder).name)
     ai = None

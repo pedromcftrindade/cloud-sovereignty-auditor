@@ -64,10 +64,12 @@ def build_export(result: Result, migration: Optional[Migration] = None) -> dict[
             "executive_summary": report.executive_summary,
             "top_risks": report.top_risks,
             "next_steps": report.next_steps,
+            "changes": report.changes,
             "ai_text": report.ai_used,
             "markdown": report.markdown,
         },
         "analysis": {"files_read": result.analysis.files_read,
                      "errors": [asdict(e) for e in result.analysis.errors]},
+        "suspected_waste": [asdict(w) for w in result.analysis.waste],
         "migration": _migration(migration) if migration else None,
     }

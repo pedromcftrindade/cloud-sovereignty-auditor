@@ -34,6 +34,7 @@ class Report:
     top_risks: list[dict[str, str]] = field(default_factory=list)
     executive_summary: str = ""
     next_steps: list[str] = field(default_factory=list)
+    changes: list[dict[str, str]] = field(default_factory=list)   # {"item", "change", "why", "source"}
 
 
 def _esc(value: Any) -> str:
@@ -92,7 +93,7 @@ def build_facts(analysis: Analysis, score: Score, unknown: list[Resource],
         "jurisdiction_exposure": {"dependencies": exposure.total, "controlled_outside_eu": exposure.outside_eu,
                                   "controlled_in_eu": exposure.in_eu, "unknown": exposure.unknown,
                                   "companies_outside_eu": exposure.companies},
-        "third_party_services": [{k: s[k] for k in ("service", "company", "country", "zone", "category", "level")}
+        "third_party_services": [{k: s[k] for k in ("address", "service", "company", "country", "zone", "category", "level")}
                                  for s in services if s["verified"]],
         "unknown_external_hosts": [s["service"] for s in services if not s["verified"]],
         "sovereignty_score": score.rounded,
@@ -110,7 +111,8 @@ def build_facts(analysis: Analysis, score: Score, unknown: list[Resource],
         "estimated_modules": [r.address for r in analysis.resources if r.origin == "module"],
         "unclassified_types": sorted({r.type for r in unknown if r.origin != "service"}),
         "files_with_errors": [e.file for e in analysis.errors],
-    }
+    } | ({"suspected_waste": [{"item": w.address, "what": w.title, "why": w.reason, "confidence": w.confidence}
+                              for w in analysis.waste]} if analysis.waste else {})
 
 
 def _ask_llm_text(facts: dict[str, Any], llm) -> Optional[dict[str, Any]]:
@@ -120,15 +122,21 @@ def _ask_llm_text(facts: dict[str, Any], llm) -> Optional[dict[str, Any]]:
         "You are a cloud architect writing a vendor lock-in report for a non-technical manager "
         "of a European company. Use ONLY the facts below. Do not invent resources, numbers, prices "
         "or legal conclusions; say 'may be subject to', never 'illegal'.\n"
-        f"FACTS:\n{json.dumps(facts, ensure_ascii=False, indent=1)}\n\n"
+        f"FACTS:\n{json.dumps(facts, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "If third_party_services is not empty, mention the jurisdiction exposure (how many dependencies "
         "are controlled by companies headquartered outside the EU) in the summary.\n"
         "Answer ONLY with JSON in this shape:\n"
         '{"executive_summary": "3-4 sentences", '
         '"top_risks": [{"address": "<exactly one address from highest_lock_in_resources>", '
         '"why": "1-2 sentences", "recommendation": "1 sentence"}], '
-        '"next_steps": ["short sentence", "..."]}\n'
-        "Give at most 3 top_risks and at most 4 next_steps."
+        '"next_steps": ["short sentence", "..."], '
+        '"changes": [{"item": "<exactly one address from highest_lock_in_resources, third_party_services '
+        'or suspected_waste>", "change": "what to change, concretely, in 1 sentence", "why": "1 sentence"}]}\n'
+        "Give at most 3 top_risks, at most 4 next_steps and at most 6 changes. changes are the concrete "
+        "modifications you suggest (replace a service with its European option, change a configuration, "
+        "delete something unused), most important first."
+        + ("\nsuspected_waste lists things that look unused: suggest reviewing and deleting them instead of "
+           "migrating them, and never say they are certainly unused." if facts.get("suspected_waste") else "")
     )
     answer = llm.ask_json(prompt)
     return answer if isinstance(answer, dict) else None
@@ -148,7 +156,42 @@ def _validated_ai_text(answer: Optional[dict[str, Any]], facts: dict[str, Any]) 
     steps = [str(s).strip() for s in (answer.get("next_steps") or []) if str(s).strip()][:4]
     if not isinstance(summary, str) or not summary.strip():
         return None
-    return {"executive_summary": summary.strip(), "top_risks": risks, "next_steps": steps}
+    return {"executive_summary": summary.strip(), "top_risks": risks, "next_steps": steps,
+            "changes": _validated_changes(answer.get("changes"), facts)}
+
+
+def change_items(facts: dict[str, Any]) -> set[str]:
+    """Addresses the AI may suggest changes for: the facts it was given, nothing else."""
+    return ({r["address"] for r in facts["highest_lock_in_resources"]}
+            | {s["address"] for s in facts.get("third_party_services", [])}
+            | {w["item"] for w in facts.get("suspected_waste", [])})
+
+
+def _validated_changes(raw: Any, facts: dict[str, Any], limit: int = 6) -> list[dict[str, str]]:
+    allowed, seen, out = change_items(facts), set(), []
+    for c in raw if isinstance(raw, list) else []:
+        if not isinstance(c, dict):
+            continue
+        item = str(c.get("item", "")).strip().strip("`'\" ")      # small models add `backticks` or quotes
+        change = " ".join(str(c.get("change", "")).split())[:240]
+        why = " ".join(str(c.get("why", "")).split())[:240]
+        if item in allowed and item not in seen and change:      # invented items are dropped
+            seen.add(item)
+            out.append({"item": item, "change": change, "why": why, "source": "ai"})
+        if len(out) == limit:
+            break
+    return out
+
+
+def _template_changes(analysis: Analysis, facts: dict[str, Any], limit: int = 6) -> list[dict[str, str]]:
+    """Without AI: the same list, written from the catalogs and the waste findings."""
+    out = [{"item": w.address, "change": "Review it with the team, then delete it instead of migrating it.",
+            "why": w.reason, "source": "catalog"} for w in analysis.waste if w.exclude_from_migration]
+    for r in facts["highest_lock_in_resources"]:
+        if r["level"] >= 2 and r["european_alternative"]:
+            out.append({"item": r["address"], "change": f"Move it to: {r['european_alternative']}.",
+                        "why": r["what_changes"], "source": "catalog"})
+    return out[:limit]
 
 
 def _effort_of(analysis: Analysis, address: str) -> str:
@@ -193,7 +236,8 @@ def _template_text(analysis: Analysis, score: Score, facts: dict[str, Any]) -> d
     steps = ["Review the highest lock-in components with the application team.",
              "Confirm data residency requirements for each region listed.",
              "Generate a migration plan to Leaseweb (phase 2)."]
-    return {"executive_summary": summary, "top_risks": risks, "next_steps": steps}
+    return {"executive_summary": summary, "top_risks": risks, "next_steps": steps,
+            "changes": _template_changes(analysis, facts)}
 
 
 def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
@@ -268,6 +312,16 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
         add(f"- Recommendation: {risk['recommendation']}")
         add(f"- Leaseweb option: {info.get('leaseweb', '-')}\n")
 
+    changes = text.get("changes") or (_template_changes(analysis, facts) if ai_used else [])
+    if changes:
+        by_source = "suggested by the AI from the facts above, not verified" if changes[0]["source"] == "ai" \
+            else "from the catalogs"
+        add(f"### What to change ({by_source})\n")
+        add("| # | Item | Change | Why |\n|---|---|---|---|")
+        for i, c in enumerate(changes, 1):
+            add(f"| {i} | `{_esc(c['item'])}` | {_esc(c['change'])} | {_esc(c['why'])} |")
+        add("")
+
     lines.extend(ai_markdown(analysis))
 
     add("## 4. Full inventory\n")
@@ -284,6 +338,18 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
         for r in sorted(support, key=lambda x: x.address):
             add(f"| `{_esc(r.address)}` | {_esc(_category_info(r.category).get('label', r.category))} | {_esc(r.file)} |")
     add("")
+
+    if analysis.waste:
+        add(f"### Suspected waste: {len(analysis.waste)} item(s) to review before migrating\n")
+        add("These look unused in the analysed files (found by ExitPilot, not by the AI). Nothing was deleted: "
+            "review each one. Items marked *left out* are not translated in the migration plan (phase 2) "
+            "unless you include them.\n")
+        add("| Item | What | Why | Confidence | Migration |\n|---|---|---|---|---|")
+        for w in analysis.waste:
+            where = "; ".join(f"{e['file']}" + (f":{e['line']}" if e.get("line") else "") for e in w.evidence[:3])
+            add(f"| `{_esc(w.address)}` | {_esc(w.title)} | {_esc(w.reason)} ({_esc(where)}) | {w.confidence} | "
+                f"{'left out' if w.exclude_from_migration else 'kept (clean up only)'} |")
+        add("")
 
     add("## 5. What we could not fully analyse\n")
     limits = []
@@ -321,4 +387,4 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
 
     return Report(markdown="\n".join(lines), facts=facts, ai_used=ai_used, project_name=project_name,
                   top_risks=text["top_risks"], executive_summary=text["executive_summary"],
-                  next_steps=text["next_steps"])
+                  next_steps=text["next_steps"], changes=changes)

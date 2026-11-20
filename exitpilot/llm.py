@@ -1,12 +1,16 @@
 """The only module that talks to the LLM.
 
-Two interchangeable clients, chosen with make_llm() and LLM_PROVIDER:
+Interchangeable clients, chosen with make_llm() and LLM_PROVIDER:
 
   mistral (default)  Mistral's API (a European provider)
+  ollama             Ollama on this machine, through its native API (/api/chat). This is the
+                     server behind "ollama run mistral". The native API lets us set the context
+                     window (num_ctx) and JSON mode, which its OpenAI-compatible endpoint cannot:
+                     with the default context, long prompts would be cut without any error.
   local              any server with an OpenAI-compatible API running on your own
-                     machine: LM Studio, Ollama, llama.cpp, vLLM... Nothing leaves
-                     the machine. "ollama" and "lmstudio" are aliases that only
-                     change the default address.
+                     machine: LM Studio, llama.cpp, vLLM... ("lmstudio" only changes the
+                     default address; "ollama-openai" uses Ollama's OpenAI-compatible endpoint).
+  Nothing leaves the machine with a local model.
 
 * Answers are cached on disk (.cache/llm_cache.json). The same question is
   never sent twice, and a cached answer is reused even with no internet, no
@@ -23,6 +27,13 @@ Environment variables:
   Mistral:
     MISTRAL_API_KEY  API key (the free "Experiment" plan is enough for the demo)
     MISTRAL_MODEL    default: mistral-small-latest
+
+  Ollama (LLM_PROVIDER=ollama):
+    LLM_MODEL        default: mistral (the model of "ollama run mistral")
+    LLM_BASE_URL     default: http://localhost:11434 (a trailing /v1 is ignored)
+    LLM_NUM_CTX      context window in tokens, default 8192
+    LLM_JSON_MODE    default "1" for Ollama (format=json); "0" turns it off
+    LLM_TIMEOUT      seconds per request, default 180
 
   Local server:
     LLM_BASE_URL     default: http://localhost:1234/v1 (LM Studio), http://localhost:11434/v1 (Ollama)
@@ -49,7 +60,9 @@ from typing import Any, Optional
 
 DEFAULT_MODEL = "mistral-small-latest"
 LMSTUDIO_URL = "http://localhost:1234/v1"
-OLLAMA_URL = "http://localhost:11434/v1"
+OLLAMA_URL = "http://localhost:11434/v1"            # OpenAI-compatible endpoint ("ollama-openai")
+OLLAMA_NATIVE_URL = "http://localhost:11434"         # native API ("ollama", recommended)
+OLLAMA_DEFAULT_MODEL = "mistral"
 DEFAULT_CACHE = Path(__file__).resolve().parent.parent / ".cache" / "llm_cache.json"
 
 
@@ -303,8 +316,68 @@ class LocalClient(MistralClient):
         return None
 
 
+class OllamaClient(LocalClient):
+    """Ollama through its native API: POST /api/chat, GET /api/tags.
+
+    Same interface and cache as the other clients. Differences from the OpenAI-compatible endpoint:
+      * options.num_ctx sets the context window (default 8192). Ollama's default is smaller, and a
+        prompt longer than the window is cut silently: the model would then miss the instructions.
+      * format="json" makes the model answer with valid JSON.
+      * "mistral" matches the model Ollama lists as "mistral:latest".
+    """
+
+    label = "Ollama"
+
+    def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None,
+                 json_mode: Optional[bool] = None, num_ctx: Optional[int] = None, **kwargs: Any):
+        url = (base_url or os.getenv("LLM_BASE_URL") or OLLAMA_NATIVE_URL).strip().rstrip("/")
+        if url.endswith("/v1"):
+            url = url[:-3]                     # the native API lives at the root, not under /v1
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        self.num_ctx = int(num_ctx if num_ctx is not None else os.getenv("LLM_NUM_CTX", "8192"))
+        if json_mode is None:
+            json_mode = os.getenv("LLM_JSON_MODE", "1") != "0"
+        kwargs.pop("default_url", None)
+        super().__init__(base_url=url, model=model or os.getenv("LLM_MODEL") or OLLAMA_DEFAULT_MODEL,
+                         json_mode=json_mode, default_url=url, **kwargs)
+
+    def _matches(self, names: list[str]) -> bool:
+        wanted = self.model.lower()
+        return any(n.lower() in (wanted, f"{wanted}:latest") for n in names)
+
+    def _probe(self) -> None:
+        self._probed_at = time.monotonic()
+        try:
+            listing = self._request("/api/tags", timeout=3)
+            names = [m.get("name") for m in (listing.get("models") or []) if isinstance(m, dict) and m.get("name")]
+        except Exception as exc:  # noqa: BLE001 - any failure means "not reachable"
+            self._reachable = False
+            self.status = (f"Ollama not reachable at {self.base_url} ({type(exc).__name__}): running without AI "
+                           "(cached answers still used). Start Ollama (e.g. `ollama serve`) and reload.")
+            return
+        if names and not self._matches(names):
+            self._reachable = False
+            self.status = (f"Ollama is running, but model {self.model!r} is not installed "
+                           f"(installed: {', '.join(names[:5])}). Run `ollama pull {self.model}` or set LLM_MODEL.")
+            return
+        self._reachable = True
+        self.status = f"Connected to Ollama at {self.base_url} ({self.model}, context {self.num_ctx} tokens)."
+
+    def _chat(self, system: str, prompt: str) -> str:
+        body: dict[str, Any] = {
+            "model": self.model, "stream": False,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "options": {"temperature": 0.2, "num_ctx": self.num_ctx, "num_predict": self.max_tokens},
+        }
+        if self.json_mode:
+            body["format"] = "json"
+        reply = self._request("/api/chat", body)
+        return ((reply or {}).get("message") or {}).get("content", "") or ""
+
+
 LOCAL_PROVIDERS = {"local": LMSTUDIO_URL, "lmstudio": LMSTUDIO_URL, "lm-studio": LMSTUDIO_URL,
-                   "ollama": OLLAMA_URL, "openai_compat": LMSTUDIO_URL}
+                   "ollama-openai": OLLAMA_URL, "openai_compat": LMSTUDIO_URL}
 
 
 def make_llm(provider: Optional[str] = None, **kwargs: Any) -> MistralClient:
@@ -312,6 +385,8 @@ def make_llm(provider: Optional[str] = None, **kwargs: Any) -> MistralClient:
     name = (provider or os.getenv("LLM_PROVIDER", "mistral")).strip().lower()
     if name == "mistral":
         return MistralClient(**kwargs)
+    if name == "ollama":
+        return OllamaClient(**kwargs)
     if name in LOCAL_PROVIDERS:
         return LocalClient(default_url=LOCAL_PROVIDERS[name], **kwargs)
-    raise ValueError(f"Unknown LLM_PROVIDER {name!r}: use mistral, local, lmstudio or ollama.")
+    raise ValueError(f"Unknown LLM_PROVIDER {name!r}: use mistral, ollama, lmstudio, local or ollama-openai.")

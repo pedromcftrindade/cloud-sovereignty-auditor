@@ -100,7 +100,7 @@ def _prompt(batch: list[Resource]) -> str:
         '"code_change_hint": "one sentence about the application code, or empty", '
         '"confidence": "low|medium|high"}]}\n'
         'risk = how hard and risky it is to move away from this dependency.\n'
-        f"DEPENDENCIES:\n{json.dumps([facts_for(r) for r in batch], ensure_ascii=False, indent=1)}"
+        f"DEPENDENCIES:\n{json.dumps([facts_for(r) for r in batch], ensure_ascii=False, separators=(',', ':'))}"
     )
 
 

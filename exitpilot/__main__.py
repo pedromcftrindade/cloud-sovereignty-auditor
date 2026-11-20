@@ -6,6 +6,7 @@
     python -m exitpilot my-project --ai                # AI text (Mistral by default, see LLM_PROVIDER in llm.py)
     LLM_PROVIDER=lmstudio LLM_MODEL=<model> python -m exitpilot my-project --ai   # model on this machine
     python -m exitpilot examples/loja-mista --migrate out/loja-mista   # phase 2: plan + generated files
+    python -m exitpilot examples/loja-lixo --migrate out/lixo --exclude-waste   # leave suspected waste out
     python -m exitpilot my-project --migrate out --tofu                # also run tofu validate (optional)
 """
 
@@ -38,6 +39,9 @@ def summary(result: Result) -> dict[str, Any]:
             for r in result.services if r.level is not None
         ],
         "unknown_external_hosts": [r.name for r in result.services if r.level is None],
+        "suspected_waste": [{"item": w.address, "kind": w.kind, "confidence": w.confidence,
+                             "left_out_of_migration": w.exclude_from_migration}
+                            for w in result.analysis.waste],
         "unclassified_infrastructure": sorted(r.address for r in result.unknown if r.origin != "service"),
         "files_with_errors": [e.file for e in result.analysis.errors],
     }
@@ -55,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-ai-analysis", action="store_true",
                         help="with --ai: only write the report text, skip the AI analysis of each dependency")
     parser.add_argument("--migrate", metavar="OUT_DIR", help="phase 2: write the migration plan and files here")
+    parser.add_argument("--exclude-waste", action="store_true",
+                        help="with --migrate/--out: leave suspected waste (unused things) out of the plan")
     parser.add_argument("--overwrite", action="store_true", help="allow --migrate to write into a non-empty folder")
     parser.add_argument("--tofu", action="store_true", help="with --migrate: run tofu init + validate (needs OpenTofu)")
     args = parser.parse_args(argv)
@@ -85,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         from .export import build_export
         from .migrate import plan_migration
 
-        data = build_export(result, plan_migration(result))
+        data = build_export(result, plan_migration(result, exclude_waste=args.exclude_waste))
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         ai = data["ai"]
@@ -98,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.migrate:
         from .migrate import plan_migration, write_migration
 
-        migration = plan_migration(result)
+        migration = plan_migration(result, exclude_waste=args.exclude_waste)
         try:
             out = write_migration(migration, args.migrate, overwrite=args.overwrite, run_tofu=args.tofu)
         except FileExistsError as exc:

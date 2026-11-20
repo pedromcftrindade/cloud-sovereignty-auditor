@@ -120,7 +120,7 @@ def parse_folder(folder: str | Path) -> Analysis:
 
     parsed: list[tuple[str, dict[str, Any]]] = []
     for path in files:
-        rel = str(path.relative_to(root))
+        rel = path.relative_to(root).as_posix()   # always "a/b.tf", also on Windows ("a\\b.tf")
         try:
             parsed.append((rel, parse_text(path.read_text(encoding="utf-8"))))
             analysis.files_read.append(rel)

@@ -80,6 +80,14 @@ COMPOSE_IMAGE_RE = re.compile(r"^\s*image:\s*[\"']?([^\"'\s#]+)", re.IGNORECASE)
 DOCKER_FROM_RE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?", re.IGNORECASE)
 REQUIREMENT_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._\-]*)")
 COMMENT_PREFIXES = ("#", "//", "/*", "*", "<!--", "--", ";")
+# A value such as FLASK_APP=app.py or ENTRY=index.js is a file name, not a host, even though
+# ".py" and ".js" look like 2-letter country domains.
+FILE_EXTENSIONS = {"py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "sh", "rb", "pl", "php", "go", "rs", "cs",
+                   "kt", "java", "jar", "tf", "md", "txt", "log", "json", "yml", "yaml", "toml", "ini", "cfg",
+                   "conf", "env", "html", "htm", "css", "scss", "sql", "db", "csv", "xml", "pem", "key", "crt",
+                   "lock", "zip", "gz", "tar", "pdf", "png", "jpg", "svg", "exe", "dll", "so", "wasm"}
+# Inline comments at the end of a code line: "x = 1  # see https://..." or "f()  // https://..."
+INLINE_COMMENT_RE = re.compile(r"(?:(?<=\s)#|(?<=\s)//)\s.*$")
 
 
 # ------------------------------------------------------------------ catalog
@@ -104,7 +112,8 @@ def load_services(path: str = str(SERVICES_PATH)) -> dict[str, Any]:
     # Finds known service hosts written without a scheme, e.g. SMTP_HOST=smtp.sendgrid.net.
     # The look-ahead rejects lookalikes such as "sendgrid.com.evil.io".
     alternatives = "|".join(re.escape(d) for d in sorted(discovery, key=len, reverse=True))
-    known_re = re.compile(rf"(?<![a-z0-9.\-])((?:[a-z0-9\-]+\.)*(?:{alternatives}))(?![a-z0-9\-]|\.[a-z0-9])",
+    # The look-behind also rejects e-mail addresses ("billing@stripe.com" is not a dependency).
+    known_re = re.compile(rf"(?<![a-z0-9.\-@])((?:[a-z0-9\-]+\.)*(?:{alternatives}))(?![a-z0-9\-]|\.[a-z0-9])",
                           re.IGNORECASE)
     return {"services": services, "pypi": pypi, "npm": npm, "known_re": known_re}
 
@@ -252,6 +261,8 @@ def _scan_text(text: str, rel: str, kind: str, found: _Findings, is_env: bool) -
     for number, line in enumerate(text.splitlines(), 1):
         if _is_comment(line):
             continue
+        if kind == "code":
+            line = INLINE_COMMENT_RE.sub("", line)      # a URL in a trailing comment is not a dependency
         env = ENV_LINE_RE.match(line) if is_env else None
         detail_for = (lambda host: env.group(1)) if env else (lambda host: host)
         for match in URL_RE.finditer(line):
@@ -260,7 +271,8 @@ def _scan_text(text: str, rel: str, kind: str, found: _Findings, is_env: bool) -
             found.add_host(match.group(1), rel, number, kind, detail_for(match.group(1)))
         if env:                                         # SMTP_HOST=smtp.sendgrid.net (no scheme)
             value = env.group(2).strip().strip("'\"")
-            if BARE_HOST_RE.match(value) and value.split(":")[0].rsplit(".", 1)[-1].isalpha():
+            tld = value.split(":")[0].rsplit(".", 1)[-1]
+            if BARE_HOST_RE.match(value) and tld.isalpha() and tld.lower() not in FILE_EXTENSIONS:
                 found.add_host(value.split(":")[0], rel, number, kind, env.group(1))
 
 
@@ -360,7 +372,7 @@ def collect_services(folder: str | Path) -> tuple[list[Resource], list[str], lis
     errors: list[ParseError] = []
 
     for path in _iter_files(root):
-        rel = str(path.relative_to(root))
+        rel = path.relative_to(root).as_posix()     # "a/b.py" on every OS (Windows gives "a\\b.py")
         if path.name == SNAPSHOT_NAME:
             text = _read(path)
             if text is not None:
