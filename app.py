@@ -114,6 +114,13 @@ if len(result.by_provider) > 1:
     for col, (prov, s) in zip(cols, result.by_provider.items()):
         col.metric(PROVIDER_NAMES.get(prov, prov), "n/a" if s.value is None else f"{s.rounded}/100")
 
+if analysis.security:
+    critical = sum(1 for f in analysis.security if f.severity == "critical")
+    st.error(f"🔓 **{len(analysis.security)} security problem(s)**" + (f" ({critical} critical)" if critical else "")
+             + ": " + "; ".join(f.title for f in analysis.security[:3])
+             + (" ..." if len(analysis.security) > 3 else "")
+             + ". See *Security* in the report: the migration plan lists them so they are not carried over.")
+
 if analysis.waste:
     left_out = sum(1 for w in analysis.waste if w.exclude_from_migration)
     st.info(f"🧹 **{len(analysis.waste)} suspected waste item(s)** look unused ({left_out} can be left out of the "
@@ -160,6 +167,10 @@ with tab_inventory:
                        "zone": s["zone"], "category": s["category"], "level": s["level"],
                        "verified": s["verified"], "evidence": s["evidence"]} for s in services],
                      width="stretch", hide_index=True)
+    if analysis.security:
+        st.subheader("Security: exposed to the internet")
+        st.dataframe([{"severity": f.severity, "item": f.address, "problem": f.title, "detail": f.detail,
+                       "fix": f.fix, "file": f.file} for f in analysis.security], width="stretch", hide_index=True)
     if analysis.waste:
         st.subheader("Suspected waste (review before deleting)")
         st.dataframe([{"item": w.address, "what": w.title, "why": w.reason, "confidence": w.confidence,

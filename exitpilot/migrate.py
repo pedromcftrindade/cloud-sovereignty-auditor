@@ -124,7 +124,7 @@ COMPOSE_TEMPLATES = {
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"   # private network only: restrict it with the firewall
+      - "${{PRIVATE_IP:?set it in .env}}:5432:5432"   # listens on the private network only
 """, "postgres-data"),
     "mariadb": ("docker.io/library/mariadb:11", """\
   mariadb:
@@ -139,7 +139,7 @@ COMPOSE_TEMPLATES = {
     volumes:
       - mariadb-data:/var/lib/mysql
     ports:
-      - "3306:3306"   # private network only: restrict it with the firewall
+      - "${{PRIVATE_IP:?set it in .env}}:3306:3306"   # listens on the private network only
 """, "mariadb-data"),
     "valkey": ("docker.io/valkey/valkey:8", """\
   valkey:
@@ -148,7 +148,7 @@ COMPOSE_TEMPLATES = {
     restart: unless-stopped
     command: ["valkey-server", "--requirepass", "${{VALKEY_PASSWORD:?set it in .env}}"]
     ports:
-      - "6379:6379"   # private network only: restrict it with the firewall
+      - "${{PRIVATE_IP:?set it in .env}}:6379:6379"   # listens on the private network only
 """, None),
     "rabbitmq": ("docker.io/library/rabbitmq:3-management", """\
   rabbitmq:
@@ -161,7 +161,7 @@ COMPOSE_TEMPLATES = {
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     ports:
-      - "5672:5672"   # private network only: restrict it with the firewall
+      - "${{PRIVATE_IP:?set it in .env}}:5672:5672"   # listens on the private network only
 """, "rabbitmq-data"),
     "keycloak": ("quay.io/keycloak/keycloak:26.0", """\
   keycloak:
@@ -173,7 +173,7 @@ COMPOSE_TEMPLATES = {
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${{KEYCLOAK_ADMIN_PASSWORD:?set it in .env}}
     ports:
-      - "8080:8080"   # private network only: restrict it with the firewall
+      - "${{PRIVATE_IP:?set it in .env}}:8080:8080"   # listens on the private network only
 """, None),
 }
 COMPOSE_PASSWORDS = {"postgres": ["POSTGRES_PASSWORD"], "mariadb": ["MARIADB_PASSWORD", "MARIADB_ROOT_PASSWORD"],
@@ -239,6 +239,7 @@ class Migration:
     checks: list[Check] = field(default_factory=list)
     waste: list = field(default_factory=list)          # WasteFinding list from the analysis (waste.py)
     waste_excluded: bool = False                       # True: suspected waste was left out of the plan
+    security: list = field(default_factory=list)       # SecurityFinding list from the analysis (security.py)
 
     @property
     def plan_markdown(self) -> str:
@@ -461,7 +462,9 @@ def _compose(needed: list[str]) -> tuple[str, str]:
     compose += [b.rstrip("\n") for b in blocks]
     if volumes:
         compose += ["", "volumes:"] + [f"  {v}:" for v in volumes]
-    env = ["# Copy to .env next to docker-compose.yml and set strong passwords. Never commit .env."]
+    env = ["# Copy to .env next to docker-compose.yml and set strong passwords. Never commit .env.",
+           "# Private network address of the services instance: the services listen only there,",
+           "# never on the public internet.", "PRIVATE_IP="]
     env += [f"{p}=" for p in passwords]
     return "\n".join(compose) + "\n", "\n".join(env) + "\n"
 
@@ -573,6 +576,15 @@ def _plan_markdown(m: Migration) -> str:
         add("\n".join(f"- {s.today}" for s in kept))
         add("")
 
+    if m.security:
+        add("## Security: do not carry these over\n")
+        add("The source infrastructure exposes these to the whole internet (see the lock-in report). Do not "
+            "re-create them on the new provider: apply the fix instead.\n")
+        add("| Severity | Item | Problem | Fix |\n|---|---|---|---|")
+        for f in m.security:
+            add(f"| {f.severity} | `{f.address}` | {f.title} | {f.fix} |")
+        add("")
+
     if m.waste:
         add("## Suspected waste: clean up instead of migrating\n")
         add("These look unused in the analysed files (see the lock-in report). Review each one with the team. "
@@ -655,6 +667,35 @@ def check_sovereignty(files: dict[str, str]) -> Check:
     return Check("Generated files stay in the EU", "passed", f"Dependencies in the generated files: {found}.")
 
 
+PORT_MAPPING_RE = re.compile(r'^\s*-\s*(?:"([^"]+)"|(\S+))')
+
+
+def check_exposure(files: dict[str, str]) -> Check:
+    """The generated stack must not listen on every interface (which includes the public internet)."""
+    name = "Generated services do not face the internet"
+    problems = []
+    for path, text in files.items():
+        if not path.endswith(("docker-compose.yml", "cloud-init.yaml")):
+            continue
+        in_ports = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ports:"):
+                in_ports = True
+                continue
+            if in_ports and not stripped.startswith("-"):
+                in_ports = False
+            if in_ports:
+                mapping = PORT_MAPPING_RE.match(line)
+                spec = (mapping.group(1) or mapping.group(2)) if mapping else ""
+                parts = spec.rsplit(":", 2)                   # "<host ip>:<host port>:<container port>"
+                if len(parts) < 3 or parts[0] in ("0.0.0.0", "::", "[::]"):   # "5432:5432" = every interface
+                    problems.append(f"{path}: {stripped}")
+    if problems:
+        return Check(name, "failed", "Published on every interface: " + "; ".join(problems[:3]))
+    return Check(name, "passed", "Every published port is bound to the private network address (PRIVATE_IP).")
+
+
 def check_tofu(out_dir: Optional[str | Path], run: bool) -> Check:
     name = "OpenTofu validate"
     if not run or out_dir is None:
@@ -731,7 +772,9 @@ def plan_migration(result, exclude_waste: bool = False) -> Migration:
                           before=compute_score(resources), after=compute_score(projected),
                           exposure_before=compute_exposure(resources), exposure_after=compute_exposure(projected),
                           waste=waste, waste_excluded=exclude_waste)
-    migration.checks = [check_terraform(files), check_sovereignty(files), check_tofu(None, run=False)]
+    migration.checks = [check_terraform(files), check_sovereignty(files), check_exposure(files),
+                        check_tofu(None, run=False)]                 # tofu stays last (write_migration)
+    migration.security = list(getattr(analysis, "security", []) or [])
     migration.files["MIGRATION_PLAN.md"] = _plan_markdown(migration)
     return migration
 

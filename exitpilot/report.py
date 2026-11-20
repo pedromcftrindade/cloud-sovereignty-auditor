@@ -19,6 +19,7 @@ from .ai_analysis import ai_markdown
 from .classifier import load_catalog
 from .model import PROVIDER_NAMES, Analysis, Resource
 from .regions import describe_region, jurisdiction_note
+from .security import security_markdown
 from .scoring import Exposure, Score, compute_exposure, compute_score, counted_resources, score_by_provider
 from .services import evidence_summary
 
@@ -338,6 +339,8 @@ def generate_report(analysis: Analysis, unknown: list[Resource], llm=None,
         for r in sorted(support, key=lambda x: x.address):
             add(f"| `{_esc(r.address)}` | {_esc(_category_info(r.category).get('label', r.category))} | {_esc(r.file)} |")
     add("")
+
+    lines.extend(security_markdown(analysis.security))
 
     if analysis.waste:
         add(f"### Suspected waste: {len(analysis.waste)} item(s) to review before migrating\n")

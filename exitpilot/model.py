@@ -111,6 +111,7 @@ class Analysis:
     errors: list[ParseError] = field(default_factory=list)
     files_read: list[str] = field(default_factory=list)
     waste: list[WasteFinding] = field(default_factory=list)      # filled by waste.py
+    security: list[Any] = field(default_factory=list)           # SecurityFinding list (security.py)
 
     @property
     def providers(self) -> list[str]:
@@ -124,4 +125,6 @@ class Analysis:
         }
         if self.waste:
             data["suspected_waste"] = [asdict(w) for w in self.waste]
+        if self.security:
+            data["security_findings"] = [asdict(f) for f in self.security]
         return data

@@ -59,6 +59,15 @@ into a migration plan to Leaseweb and European alternatives, with the files to s
    explanations from those facts. Risks that mention non-existent resources are dropped. Without
    AI, a template text is used, so the report is always produced.
 
+## Security check: what is exposed to the internet
+
+`exitpilot/security.py` reads the firewall rules in the Terraform files (AWS security groups and rules, Azure NSGs,
+Google firewalls) and reports what anyone on the internet (`0.0.0.0/0`, `::/0`, `*`, `Internet`) can reach:
+SSH, RDP, databases, caches, admin APIs, every port at once, databases with public access switched on, and buckets
+readable by anyone. Ports 80/443 (a public website) are not reported. It is a static check: nothing is scanned on
+the network. The migration plan lists the findings under *Security: do not carry these over*, and the services it
+generates listen only on the private network address (`PRIVATE_IP`), which a check of the plan verifies.
+
 ## Market study: where to go
 
 The **Market study** tab (and `python -m exitpilot <folder> --market Lisbon`) compares European providers
@@ -248,6 +257,7 @@ exitpilot/
   services.py                2b: config, code, dependencies, images, traffic -> common representation
   waste.py                   2c: suspected waste (unused resources, SDKs, variables)
   market.py, providers.json  market study: European providers by price, distance, managed services
+  security.py                what the code exposes to the internet (open ports, public DB, public buckets)
   catalog.json               categories, European alternatives, lock-in level per Terraform type
   services.json              third-party services: hosts, packages, company, headquarters, level
   classifier.py              catalog + services lookup, prefixes, modules, validated AI fallback
