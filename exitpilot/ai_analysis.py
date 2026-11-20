@@ -135,6 +135,20 @@ def clean_item(raw: Any, res: Resource) -> Optional[dict[str, Any]]:
     return block
 
 
+def items_of(answer: Any) -> Optional[list]:
+    """The list of items in the model's answer. Small models vary the wrapper, so accept
+    {"items": [...]}, [{"items": [...]}] and a bare list of {"address": ...} objects."""
+    if isinstance(answer, dict):
+        items = answer.get("items")
+        return items if isinstance(items, list) else None
+    if isinstance(answer, list):
+        if len(answer) == 1 and isinstance(answer[0], dict) and isinstance(answer[0].get("items"), list):
+            return answer[0]["items"]
+        if answer and all(isinstance(x, dict) for x in answer) and any("address" in x for x in answer):
+            return answer
+    return None
+
+
 def enrich(analysis: Analysis, llm) -> int:
     """Ask the model to analyse every dependency. Stores the validated answers in Resource.ai.
     Returns how many dependencies were analysed. Does nothing (returns 0) without a usable model."""
@@ -144,9 +158,8 @@ def enrich(analysis: Analysis, llm) -> int:
     done = 0
     for start in range(0, len(targets), BATCH_SIZE):
         batch = targets[start:start + BATCH_SIZE]
-        answer = llm.ask_json(_prompt(batch))
-        items = answer.get("items") if isinstance(answer, dict) else None
-        if not isinstance(items, list):
+        items = items_of(llm.ask_json(_prompt(batch)))
+        if items is None:
             continue
         by_address = {r.address: r for r in batch}               # only addresses we asked about
         for raw in items:
