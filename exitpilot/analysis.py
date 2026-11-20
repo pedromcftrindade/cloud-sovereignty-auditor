@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .ai_analysis import enrich
 from .classifier import classify
 from .model import Analysis, Resource
 from .parser import parse_folder
@@ -34,6 +35,7 @@ class Result:
     by_provider: dict[str, Score]
     report: Report
     exposure: Optional[Exposure] = None
+    ai: Optional[dict] = None          # {"provider", "model", "dependencies_analysed"} when a model was used
 
     @property
     def services(self) -> list[Resource]:
@@ -41,15 +43,20 @@ class Result:
 
 
 def analyse_folder(folder: str | Path, llm=None, project_name: Optional[str] = None,
-                   include_services: bool = True) -> Result:
+                   include_services: bool = True, ai_analysis: bool = True) -> Result:
     analysis = parse_folder(folder)                 # 2a: declared infrastructure (Terraform)
     if include_services:
         add_services(analysis, folder)              # 2b: third-party services really used
-    unknown = classify(analysis, llm=llm)
+    unknown = classify(analysis, llm=llm)           # catalogs first, then the AI for what they do not know
+    analysed = enrich(analysis, llm) if ai_analysis else 0   # the AI analyses each dependency (JSON)
     report = generate_report(analysis, unknown, llm=llm, project_name=project_name or Path(folder).name)
+    ai = None
+    if llm is not None and (analysed or report.ai_used):
+        ai = {"provider": getattr(llm, "label", "AI"), "model": getattr(llm, "model", ""),
+              "dependencies_analysed": analysed}
     return Result(analysis=analysis, unknown=unknown, score=compute_score(analysis.resources),
                   by_provider=score_by_provider(analysis.resources), report=report,
-                  exposure=compute_exposure(analysis.resources))
+                  exposure=compute_exposure(analysis.resources), ai=ai)
 
 
 def to_dot(analysis: Analysis, include_support: bool = False) -> str:

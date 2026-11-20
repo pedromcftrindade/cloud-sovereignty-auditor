@@ -57,6 +57,11 @@ class Resource:
     company_zone: Optional[str] = None      # "EU" | "Europe (non-EU)" | "Outside Europe"
     evidence: list[dict[str, Any]] = field(default_factory=list)  # [{"file", "line", "kind", "detail"}]
 
+    # Filled by ai_analysis.py when a model is used. Everything in it is AI output (source "ai"),
+    # validated but not verified: risk, why_it_matters, migration_notes, code_change_hint, confidence,
+    # owner_guess (unknown hosts only), plus the provider and model that wrote it.
+    ai: Optional[dict[str, Any]] = None
+
     # Filled in by the classifier
     category: Optional[str] = None     # e.g. "database"
     level: Optional[int] = None        # 0..3, None = not classified

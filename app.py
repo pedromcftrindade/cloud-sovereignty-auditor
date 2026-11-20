@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 
 from exitpilot.analysis import (LEVEL_COLOURS, SUPPORT_COLOUR, UNKNOWN_COLOUR, analyse_folder,
                                 safe_extract_zip, to_dot)
-from exitpilot.llm import MistralClient
+from exitpilot.export import build_export
+from exitpilot.llm import make_llm
 from exitpilot.migrate import migration_zip, plan_migration
 from exitpilot.model import PROVIDER_NAMES
 from exitpilot.report import ranked_main_resources, service_rows
@@ -28,9 +29,10 @@ st.set_page_config(page_title="ExitPilot - cloud lock-in report", page_icon="�
 
 
 @st.cache_resource
-def get_llm() -> MistralClient:
+def get_llm():
     # Created once per server: keeps the disk cache in memory and avoids re-creating the client.
-    return MistralClient()
+    # LLM_PROVIDER chooses Mistral's API (default) or a model server on this machine (see llm.py).
+    return make_llm()
 
 
 def run_analysis(source_dir: Path, project_name: str, use_ai: bool):
@@ -53,7 +55,7 @@ uploads = st.sidebar.file_uploader(
     accept_multiple_files=True, disabled=(mode != "Upload"),
 )
 
-use_ai = st.sidebar.toggle("Use AI (Mistral)", value=True)
+use_ai = st.sidebar.toggle(f"Use AI ({get_llm().label})", value=True)
 llm_status = get_llm().status
 st.sidebar.caption(llm_status if use_ai else "AI disabled: template text only.")
 
@@ -110,7 +112,7 @@ if len(result.by_provider) > 1:
     for col, (prov, s) in zip(cols, result.by_provider.items()):
         col.metric(PROVIDER_NAMES.get(prov, prov), "n/a" if s.value is None else f"{s.rounded}/100")
 
-st.caption("🤖 Report text written by AI (Mistral), numbers computed by ExitPilot."
+st.caption(f"🤖 Report text written by AI ({get_llm().label}), numbers computed by ExitPilot."
            if report.ai_used else "Report text from template (AI not used). All numbers computed by ExitPilot.")
 
 tab_report, tab_map, tab_inventory, tab_json = st.tabs(["Report", "Dependency map", "Inventory", "Common JSON"])
@@ -162,6 +164,12 @@ with tab_json:
     st.caption("The common representation every input format is converted into (input for phase 2).")
     st.code(ir, language="json")
     st.download_button("Download JSON", ir, file_name="infrastructure.json", mime="application/json")
+    st.caption("analysis.json is the complete file: facts, the AI's analysis of each dependency, the report "
+               "and (if you generated it below) the migration plan.")
+    saved = st.session_state.get("migration")
+    full = build_export(result, saved if saved is not None and saved.project == report.project_name else None)
+    st.download_button("Download analysis.json (complete)", json.dumps(full, indent=2, ensure_ascii=False),
+                       file_name="analysis.json", mime="application/json")
 
 # ------------------------------------------------------------------ phase 2: migration
 st.divider()

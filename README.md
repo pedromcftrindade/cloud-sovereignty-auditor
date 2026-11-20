@@ -41,7 +41,7 @@ into a migration plan to Leaseweb and European alternatives, with the files to s
    - 3: proprietary, no direct equivalent (DynamoDB, Lambda, Cognito, Firebase)
 
    Terraform types come from `catalog.json`, services from `services.json` (service, company,
-   headquarters). Unknown Terraform types are sent to an LLM (**Mistral**, a European provider) in
+   headquarters). Unknown Terraform types are sent to an LLM (**Mistral**, a European provider, or a local model) in
    one request, and every AI answer is validated or discarded. **Unknown hosts are never sent to the
    LLM**: who owns a service is a fact, so it comes from the curated file or is reported as "not verified".
 3. **Score**: `S = 100 x (1 - N / (3 x R))`, where `R` = number of main resources and services and
@@ -97,7 +97,7 @@ cd cloud-sovereignty-auditor
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env                                   # then put your MISTRAL_API_KEY in .env
-python scripts/check_mistral.py                        # optional: checks the key works
+python scripts/check_llm.py                            # optional: checks the configured AI works
 streamlit run app.py
 ```
 
@@ -110,8 +110,72 @@ From the terminal:
 ```bash
 python -m exitpilot examples/loja-mista            # Markdown report
 python -m exitpilot examples/loja-mista --json     # JSON summary (score, exposure, services, evidence)
-python -m exitpilot my-project --ai                # report text written by Mistral
+python -m exitpilot my-project --ai                # report text written by an LLM (Mistral by default)
 ```
+
+### AI model: Mistral's API or a model on your own machine
+
+The AI analyses each dependency and writes the report (see "What the AI does" below). Without it everything still
+runs, with template text and without the AI analysis. `LLM_PROVIDER` chooses the model, in `.env` or in the shell:
+
+| `LLM_PROVIDER` | Model | Needs |
+|---|---|---|
+| `mistral` (default) | Mistral's API (a European provider) | `MISTRAL_API_KEY` |
+| `lmstudio` | A model served by LM Studio on this machine (`http://localhost:1234/v1`) | `LLM_MODEL` |
+| `ollama` | A model served by Ollama on this machine (`http://localhost:11434/v1`) | `LLM_MODEL` |
+| `local` | Any server with an OpenAI-compatible API (set `LLM_BASE_URL`) | `LLM_MODEL` |
+
+With a local model nothing leaves the machine. Example with LM Studio (load the model and start its local
+server first, with a context of at least 8192 tokens):
+
+```bash
+LLM_PROVIDER=lmstudio LLM_MODEL=mistral-nemo-instruct-2407 python scripts/check_llm.py   # one tiny request, with timing
+LLM_PROVIDER=lmstudio LLM_MODEL=mistral-nemo-instruct-2407 streamlit run app.py
+```
+
+For a demo that does not depend on the model being fast or even running, **record the cache once, then run offline**:
+answers are saved in `.cache/llm_cache.json`, keyed by the model name, so run both with the same `LLM_MODEL`.
+
+```bash
+python -m exitpilot examples/loja-mista --ai                      # records the answers
+EXITPILOT_OFFLINE=1 python -m exitpilot examples/loja-mista --ai   # replays them: instant, no model needed
+```
+
+### What the AI does
+
+The AI analyses the infrastructure and returns **structured data (JSON)** that the rest of the program uses.
+Python extracts the facts (parsers, catalogs); the model then works on them in four ways:
+
+1. **Analyses every dependency**, in small batches. For each one it returns `risk` (low/medium/high),
+   `why_it_matters`, `migration_notes` (up to 4 steps specific to that dependency), `code_change_hint`
+   (what changes in the application code) and `confidence`. This is stored with the dependency
+   (`Resource.ai`, always marked `"source": "ai"`) and used by the report, the migration plan and `analysis.json`.
+2. **Classifies Terraform resource types** that are not in the catalog.
+3. **Suggests the owner of an unknown host** (`owner_guess`), only when it is sure. It is a suggestion to confirm: the
+   host stays "unknown" and out of the score and the exposure until someone adds it to `services.json`.
+4. **Writes the report**: executive summary, top risks and next steps.
+
+What keeps it trustworthy:
+
+- The model only sees facts ExitPilot extracted (type, category, level, region, company, where it was found). Never the
+  contents of configuration files: no passwords, keys or values.
+- Every answer is validated. An address that was not asked, a risk outside the list, a text that is too long or the
+  wrong type is dropped or trimmed.
+- Levels, companies, jurisdictions, targets, waves and the score come from the curated catalogs, not from the model.
+  The model adds analysis and wording: **the numbers are identical with and without it** (a test checks this).
+- Every AI statement is labelled (`[AI]` in the plan, a labelled section in the report, `source: "ai"` in the JSON).
+- Without a model the program still produces everything except the AI analysis.
+
+### analysis.json: the complete result, to keep working with
+
+```bash
+python -m exitpilot examples/loja-mista --ai --out analysis.json
+```
+
+One file with the score and exposure, every dependency (facts plus its `ai` block), the report (summary, risks,
+next steps, Markdown), and the migration plan (before and after, steps, checks, generated files). The app has the
+same file under **Common JSON** > *Download analysis.json (complete)*. Use `--no-ai-analysis` to keep the AI for
+the report text only.
 
 Run the tests:
 
@@ -145,12 +209,14 @@ exitpilot/
   classifier.py              catalog + services lookup, prefixes, modules, validated AI fallback
   scoring.py                 sovereignty score and jurisdiction exposure
   regions.py                 region -> country / EU zone / jurisdiction note
-  llm.py                     Mistral client with disk cache and offline mode
+  llm.py                     Mistral API or local model server (LM Studio, Ollama), disk cache, offline mode
   report.py                  Markdown report (numbers by Python, text by AI)
   analysis.py                pipeline (2a + 2b -> classify -> score -> report), dependency graph, safe zip
+  ai_analysis.py             the AI analyses every dependency: validated JSON used by report, plan and export
+  export.py                  analysis.json: facts, AI analysis, report and migration plan in one file
   migrate.py                 phase 2: targets, waves, generated files, projection, checks
 examples/                    input examples (see table above)
-tests/                       109 tests (pytest), including headless runs of the app
+tests/                       140 tests (pytest), including headless runs of the app and a fake model server
 docs/                        team plan and prompts used to generate test data
 ```
 

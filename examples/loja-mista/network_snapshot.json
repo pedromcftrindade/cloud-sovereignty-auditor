@@ -1,0 +1,12 @@
+{
+  "_about": "Outbound connections observed on the server during 10 minutes (fictitious). Hostnames, e.g. exported from DNS logs.",
+  "connections": [
+    {"process": "gunicorn", "host": "api.stripe.com", "port": 443},
+    {"process": "gunicorn", "host": "api.mistral.ai", "port": 443},
+    {"process": "gunicorn", "host": "o0000.ingest.sentry.io", "port": 443},
+    {"process": "gunicorn", "host": "api.parcelpartner-demo.eu", "port": 443},
+    {"process": "datadog-agent", "host": "http-intake.logs.datadoghq.eu", "port": 443},
+    {"process": "gunicorn", "host": "db", "port": 5432},
+    {"process": "gunicorn", "host": "10.0.0.12", "port": 8080}
+  ]
+}

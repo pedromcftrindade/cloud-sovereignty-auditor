@@ -2,7 +2,9 @@
 
     python -m exitpilot examples/loja-mista            # Markdown report, no AI
     python -m exitpilot examples/loja-mista --json     # JSON summary (handy for tests and fixtures)
-    python -m exitpilot my-project --ai                # AI text via Mistral (needs MISTRAL_API_KEY)
+    python -m exitpilot examples/loja-mista --ai --out analysis.json   # everything, in one structured file
+    python -m exitpilot my-project --ai                # AI text (Mistral by default, see LLM_PROVIDER in llm.py)
+    LLM_PROVIDER=lmstudio LLM_MODEL=<model> python -m exitpilot my-project --ai   # model on this machine
     python -m exitpilot examples/loja-mista --migrate out/loja-mista   # phase 2: plan + generated files
     python -m exitpilot my-project --migrate out --tofu                # also run tofu validate (optional)
 """
@@ -45,8 +47,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="exitpilot", description="Cloud lock-in and sovereignty report.")
     parser.add_argument("folder", help="folder with Terraform files and/or the application project")
     parser.add_argument("--json", action="store_true", help="print a JSON summary instead of the report")
-    parser.add_argument("--ai", action="store_true", help="write the report text with Mistral (MISTRAL_API_KEY)")
+    parser.add_argument("--ai", action="store_true",
+                        help="write the report text with an LLM (Mistral API, or a local server: see LLM_PROVIDER)")
     parser.add_argument("--no-services", action="store_true", help="only read Terraform (skip step 2b)")
+    parser.add_argument("--out", metavar="FILE", help="write the complete analysis (facts, AI analysis, report, "
+                                                      "migration plan) to this JSON file")
+    parser.add_argument("--no-ai-analysis", action="store_true",
+                        help="with --ai: only write the report text, skip the AI analysis of each dependency")
     parser.add_argument("--migrate", metavar="OUT_DIR", help="phase 2: write the migration plan and files here")
     parser.add_argument("--overwrite", action="store_true", help="allow --migrate to write into a non-empty folder")
     parser.add_argument("--tofu", action="store_true", help="with --migrate: run tofu init + validate (needs OpenTofu)")
@@ -61,13 +68,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.ai:
         from dotenv import load_dotenv
 
-        from .llm import MistralClient
+        from .llm import make_llm
 
         load_dotenv()
-        llm = MistralClient()
+        try:
+            llm = make_llm()
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
         print(llm.status, file=sys.stderr)
 
-    result = analyse_folder(folder, llm=llm, include_services=not args.no_services)
+    result = analyse_folder(folder, llm=llm, include_services=not args.no_services,
+                            ai_analysis=not args.no_ai_analysis)
+
+    if args.out:
+        from .export import build_export
+        from .migrate import plan_migration
+
+        data = build_export(result, plan_migration(result))
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        ai = data["ai"]
+        print(f"Analysis written to {args.out}: {len(data['resources'])} dependencies, "
+              + (f"{ai['dependencies_analysed']} analysed by {ai['provider']} ({ai['model']})" if ai
+                 else "no AI used"))
+        if not args.migrate:
+            return 0
 
     if args.migrate:
         from .migrate import plan_migration, write_migration

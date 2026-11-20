@@ -184,6 +184,22 @@ REQUIRED_CONTRACT_ARGS = ["billing_frequency", "term", "type"]
 ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
+def _ai_actions(res: Resource) -> list[str]:
+    """Steps written by the AI for this dependency (validated, always marked "[AI]")."""
+    ai = res.ai
+    if not ai:
+        return []
+    actions = [f"[AI] {note}" for note in ai.get("migration_notes", [])]
+    if ai.get("code_change_hint"):
+        actions.append(f"[AI] Code: {ai['code_change_hint']}")
+    guess = ai.get("owner_guess")
+    if guess:
+        where = f" ({guess['country']})" if guess.get("country") else ""
+        actions.append(f"[AI] The owner may be {guess['company']}{where}: unverified, confirm it before "
+                       "adding it to services.json.")
+    return actions
+
+
 @dataclass
 class Step:
     address: str                    # source address, e.g. "aws_db_instance.orders" or "service.stripe"
@@ -199,6 +215,7 @@ class Step:
     wave: int                       # 1..3, 0 = nothing to do
     generated: list[str] = field(default_factory=list)    # files that cover this step
     actions: list[str] = field(default_factory=list)      # manual work, in plain words
+    ai_risk: Optional[str] = None                         # AI's view: "low" | "medium" | "high"
 
 
 @dataclass
@@ -293,6 +310,15 @@ def _step_for(res: Resource) -> Step:
                 target=target, level_before=level_before, level_after=spec["level"],
                 company_after=LEASEWEB[0], zone_after=LEASEWEB[1], effort=effort,
                 wave=WAVES.get(effort, 2), actions=actions)
+
+
+def _with_ai(step: Step, res: Resource) -> Step:
+    """Add what the AI wrote about this dependency to the step. The target, the levels and the wave
+    stay as the catalogs decided: the AI adds steps and a risk, it never changes the plan's facts."""
+    if res.ai:
+        step.actions += _ai_actions(res)
+        step.ai_risk = res.ai.get("risk")
+    return step
 
 
 def _dependencies(resources: list[Resource]) -> list[Resource]:
@@ -500,6 +526,9 @@ def _plan_markdown(m: Migration) -> str:
     add(f"| Unknown owner | {eb.unknown} | {ea.unknown} |\n")
     add("The \"after\" column assumes every step below is done. Self-hosting lowers lock-in but adds "
         "operations work (updates, backups, monitoring): plan who will own it.\n")
+    if any(a.startswith("[AI]") for s in m.steps for a in s.actions):
+        add("Lines marked **[AI]** were written by the AI model from the facts of each dependency. They are "
+            "validated but not verified: review them. Targets, levels and waves come from the catalogs.\n")
 
     def row(s: Step) -> str:
         files = ", ".join(f"`{f}`" for f in s.generated) or "-"
@@ -622,7 +651,7 @@ def plan_migration(result) -> Migration:
     """Build the migration plan for an analysis Result (analysis.py)."""
     resources = result.analysis.resources
     deps = _dependencies(resources)
-    steps = [_step_for(r) for r in deps]
+    steps = [_with_ai(_step_for(r), r) for r in deps]
     steps.sort(key=lambda s: (s.wave if s.wave else 9, s.kind != "decision", s.today))
     by_address = {r.address: r for r in resources}
 
