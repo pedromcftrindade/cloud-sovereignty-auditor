@@ -16,6 +16,8 @@ from exitpilot.analysis import (LEVEL_COLOURS, SUPPORT_COLOUR, UNKNOWN_COLOUR, a
                                 safe_extract_zip, to_dot)
 from exitpilot.export import build_export
 from exitpilot.llm import make_llm
+from exitpilot.market import CITIES, ai_recommendation, labels, map_points, market_markdown
+from exitpilot.market import study as market_study
 from exitpilot.migrate import migration_zip, plan_migration
 from exitpilot.model import PROVIDER_NAMES
 from exitpilot.report import ranked_main_resources, service_rows
@@ -120,7 +122,8 @@ if analysis.waste:
 st.caption(f"🤖 Report text written by AI ({get_llm().label}), numbers computed by ExitPilot."
            if report.ai_used else "Report text from template (AI not used). All numbers computed by ExitPilot.")
 
-tab_report, tab_map, tab_inventory, tab_json = st.tabs(["Report", "Dependency map", "Inventory", "Common JSON"])
+tab_report, tab_market, tab_map, tab_inventory, tab_json = st.tabs(
+    ["Report", "Market study", "Dependency map", "Inventory", "Common JSON"])
 
 with tab_report:
     body = report.markdown.split("\n", 1)[1] if report.markdown.startswith("# ") else report.markdown
@@ -170,6 +173,84 @@ with tab_inventory:
         for r in analysis.resources if r.support or r.level is None
     ]
     st.dataframe(other, width="stretch", hide_index=True)
+
+with tab_market:
+    st.subheader("Where to go: European providers for this infrastructure")
+    st.caption("Compares European providers on price (cheapest plan that fits each machine), distance from your "
+               "company to their nearest EU data centre, and the managed services your infrastructure uses. "
+               "Indicative public list prices, EUR excl. VAT, compute only.")
+    q1, q2 = st.columns([1, 2])
+    with q1:
+        city = st.selectbox("Your company is in", list(CITIES), index=list(CITIES).index("Lisbon"), key="mk_city")
+        include_basic = st.checkbox("Include test/dev plans (no fixed SLA)", value=False, key="mk_basic")
+        skip_waste_mk = st.checkbox("Leave suspected waste out", value=True, key="mk_waste",
+                                    disabled=not analysis.waste)
+    with q2:
+        w1, w2, w3, w4 = st.columns(4)
+        w_price = w1.slider("Price", 0, 100, 40, key="mk_wp")
+        w_prox = w2.slider("Proximity", 0, 100, 30, key="mk_wd")
+        w_cov = w3.slider("Managed services", 0, 100, 30, key="mk_wc")
+        w_auto = w4.slider("Automated migration", 0, 100, 0, key="mk_wa",
+                           help="Weight for providers ExitPilot can already generate Terraform for (phase 2).")
+    weights = {"price": w_price, "proximity": w_prox, "coverage": w_cov, "automation": w_auto}
+    ms = market_study(analysis, city=city, weights=weights, skip_waste=skip_waste_mk and bool(analysis.waste),
+                      include_basic=include_basic)
+
+    ai_key = json.dumps([report.project_name, city, weights, include_basic, skip_waste_mk], sort_keys=True)
+    saved_ai = st.session_state.get("mk_ai", {}).get(ai_key)
+    if saved_ai:
+        ms.recommendation, ms.recommendation_source = saved_ai, "ai"
+    if use_ai and st.button("Ask the AI to explain the choice", key="mk_ask"):
+        with st.spinner("The AI is writing the recommendation..."):
+            if ai_recommendation(ms, get_llm()):
+                st.session_state.setdefault("mk_ai", {})[ai_key] = ms.recommendation
+            else:
+                st.warning("The AI answer did not pass validation (wrong provider or numbers that are not in "
+                           "the facts). Showing the recommendation computed by ExitPilot.")
+    (st.success if ms.best else st.warning)(
+        ("🤖 " if ms.recommendation_source == "ai" else "") + ms.recommendation)
+
+    best, cheap, close = ms.best, ms.best_by("price"), ms.best_by("proximity")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Best overall" + (f" (score {best.score:g})" if best else ""), best.name if best else "n/a",
+              border=True)
+    k2.metric("Cheapest" + (f" (EUR {cheap.monthly_eur:.2f}/month)" if cheap else ""),
+              cheap.name if cheap else "n/a", border=True)
+    k3.metric("Closest" + (f" ({close.distance_km} km, {close.nearest_dc})" if close else ""),
+              close.name if close else "n/a", border=True)
+
+    st.dataframe([{"provider": f"{o.name} ({o.hq})", "score": o.score,
+                   "EUR/month": o.monthly_eur, "nearest EU data centre": o.nearest_dc, "km": o.distance_km,
+                   "min. round trip (ms)": o.rtt_ms, "managed services missing": labels(o.missing) or "-",
+                   "orderable today": "yes" if o.orderable else "no", "Terraform provider": o.terraform,
+                   "ExitPilot generates Terraform": "yes" if o.phase2_automated else "no"}
+                  for o in ms.offers], width="stretch", hide_index=True)
+    st.caption("score = 100 x (wp x P + wd x D + wc x C + wa x A) / (wp + wd + wc + wa), where P = cheapest cost / "
+               "this cost, D = (nearest km + 50) / (this km + 50), C = managed services covered / needed, "
+               "A = 1 if ExitPilot already generates its Terraform, else 0. Providers whose plans cannot be "
+               "ordered today are listed but never recommended. Round trip: theoretical minimum over fibre "
+               "(about 1 ms per 100 km).")
+    with st.expander(f"Machines to host ({len(ms.machines)}) and the plan chosen at each provider"):
+        st.dataframe([{"machine": m.source, "vCPU": m.vcpu, "RAM (GB)": m.ram_gb,
+                       "size known": "yes" if m.size_known else "no (assumed 2 vCPU / 4 GB)"} for m in ms.machines],
+                     width="stretch", hide_index=True)
+        st.dataframe([{"provider": o.name, "machine": ln["source"], "plan": ln["plan"],
+                       "vCPU": ln["vcpu"], "RAM (GB)": ln["ram_gb"], "EUR/month": ln["eur_month"]}
+                      for o in ms.offers for ln in o.lines], width="stretch", hide_index=True)
+    st.markdown("**Today vs. the European options** (red: where your infrastructure runs today, blue: your "
+                "company, green: recommended provider, grey: other providers)")
+    try:
+        import pandas as pd
+
+        st.map(pd.DataFrame(map_points(analysis, ms)), latitude="lat", longitude="lon",
+               color="color", size="size")
+    except Exception as exc:  # noqa: BLE001 - a map problem must not break the page
+        st.caption(f"Map not available ({type(exc).__name__}).")
+    with st.expander("Notes and sources (checked " + ms.checked + ")"):
+        for o in ms.offers:
+            st.markdown(f"- **{o.name}**: {o.note} [Price list]({o.source})")
+    st.download_button("Download the market study (.md)", market_markdown(ms),
+                       file_name=f"{report.project_name}-market-study.md", mime="text/markdown")
 
 with tab_json:
     ir = json.dumps(analysis.to_dict(), indent=2, ensure_ascii=False)

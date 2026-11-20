@@ -1,0 +1,120 @@
+{
+  "_about": "ExitPilot market study (market.py). European cloud providers: where their data centres are, which managed services they offer, and indicative list prices of general-purpose instances. Prices are public list prices in EUR excluding VAT, as shown on the providers' own pages on the date in 'checked' (monthly price as displayed by the provider). Instance families differ (shared or dedicated vCPU, SLA, disks): compare like with like before deciding. Storage, traffic and IPv4 are not included. Capabilities come from the providers' public product catalogues. Review this file before using it for real decisions: prices change.",
+  "checked": "2026-11-20",
+  "capability_labels": {
+    "object_storage": "S3-compatible object storage",
+    "managed_database": "Managed SQL database",
+    "managed_kubernetes": "Managed Kubernetes",
+    "load_balancer": "Load balancer",
+    "dns": "DNS",
+    "cdn": "CDN",
+    "managed_messaging": "Managed queues / messaging",
+    "serverless": "Serverless functions / containers"
+  },
+  "providers": {
+    "leaseweb": {
+      "name": "Leaseweb", "company": "Leaseweb", "hq": "Netherlands", "zone": "EU",
+      "terraform": "leaseweb/leaseweb", "phase2_automated": true,
+      "capabilities": ["object_storage", "managed_kubernetes", "load_balancer", "dns", "cdn"],
+      "datacentres": [
+        {"city": "Amsterdam", "country": "Netherlands", "zone": "EU", "lat": 52.37, "lon": 4.90},
+        {"city": "Frankfurt", "country": "Germany", "zone": "EU", "lat": 50.11, "lon": 8.68},
+        {"city": "London", "country": "United Kingdom", "zone": "Europe (non-EU)", "lat": 51.51, "lon": -0.13}
+      ],
+      "plans": [
+        {"name": "LSW.C3.LARGE", "vcpu": 2, "ram_gb": 3, "eur_month": 26.02},
+        {"name": "LSW.M3.LARGE", "vcpu": 2, "ram_gb": 7, "eur_month": 29.44},
+        {"name": "LSW.C5.LARGE", "vcpu": 2, "ram_gb": 4, "eur_month": 30.16},
+        {"name": "LSW.M4.LARGE", "vcpu": 2, "ram_gb": 8, "eur_month": 32.13},
+        {"name": "LSW.M3.XLARGE", "vcpu": 4, "ram_gb": 15, "eur_month": 59.33},
+        {"name": "LSW.C5.XLARGE", "vcpu": 4, "ram_gb": 8, "eur_month": 59.92},
+        {"name": "LSW.M4.XLARGE", "vcpu": 4, "ram_gb": 16, "eur_month": 63.87},
+        {"name": "LSW.M3.2XLARGE", "vcpu": 8, "ram_gb": 30, "eur_month": 118.27},
+        {"name": "LSW.M4.2XLARGE", "vcpu": 8, "ram_gb": 32, "eur_month": 127.33}
+      ],
+      "note": "Public Cloud instances, monthly price list (EUR, NL). 1 TB of pooled traffic included. ExitPilot phase 2 generates Terraform for Leaseweb.",
+      "source": "https://www.leaseweb.com/en/products-services/cloud/public-cloud/pricing"
+    },
+    "ovhcloud": {
+      "name": "OVHcloud", "company": "OVHcloud", "hq": "France", "zone": "EU",
+      "terraform": "ovh/ovh", "phase2_automated": false,
+      "capabilities": ["object_storage", "managed_database", "managed_kubernetes", "load_balancer", "dns", "cdn", "managed_messaging"],
+      "datacentres": [
+        {"city": "Gravelines", "country": "France", "zone": "EU", "lat": 50.99, "lon": 2.13},
+        {"city": "Roubaix", "country": "France", "zone": "EU", "lat": 50.69, "lon": 3.18},
+        {"city": "Strasbourg", "country": "France", "zone": "EU", "lat": 48.57, "lon": 7.75},
+        {"city": "Paris", "country": "France", "zone": "EU", "lat": 48.86, "lon": 2.35},
+        {"city": "Frankfurt (Limburg)", "country": "Germany", "zone": "EU", "lat": 50.39, "lon": 8.06},
+        {"city": "Warsaw", "country": "Poland", "zone": "EU", "lat": 52.23, "lon": 21.01},
+        {"city": "London", "country": "United Kingdom", "zone": "Europe (non-EU)", "lat": 51.51, "lon": -0.13}
+      ],
+      "plans": [
+        {"name": "d2-4 (Discovery)", "vcpu": 2, "ram_gb": 4, "eur_month": 11.44, "basic": true},
+        {"name": "d2-8 (Discovery)", "vcpu": 4, "ram_gb": 8, "eur_month": 20.60, "basic": true},
+        {"name": "b3-8", "vcpu": 2, "ram_gb": 8, "eur_month": 37.38},
+        {"name": "b3-16", "vcpu": 4, "ram_gb": 16, "eur_month": 74.75}
+      ],
+      "note": "Discovery (d2) instances are meant for test and development. b3 prices are on-demand (EUR 0.0512/hour x 730 h); b3-16 uses the same rate per vCore. Instance traffic is not billed.",
+      "source": "https://www.ovhcloud.com/en-ie/public-cloud/prices/"
+    },
+    "scaleway": {
+      "name": "Scaleway", "company": "Scaleway (Iliad group)", "hq": "France", "zone": "EU",
+      "terraform": "scaleway/scaleway", "phase2_automated": false,
+      "capabilities": ["object_storage", "managed_database", "managed_kubernetes", "load_balancer", "dns", "cdn", "managed_messaging", "serverless"],
+      "datacentres": [
+        {"city": "Paris", "country": "France", "zone": "EU", "lat": 48.86, "lon": 2.35},
+        {"city": "Amsterdam", "country": "Netherlands", "zone": "EU", "lat": 52.37, "lon": 4.90},
+        {"city": "Warsaw", "country": "Poland", "zone": "EU", "lat": 52.23, "lon": 21.01}
+      ],
+      "plans": [
+        {"name": "PLAY2-NANO", "vcpu": 2, "ram_gb": 4, "eur_month": 20.10, "basic": true},
+        {"name": "PLAY2-MICRO", "vcpu": 4, "ram_gb": 8, "eur_month": 40.20, "basic": true},
+        {"name": "PRO2-XXS", "vcpu": 2, "ram_gb": 8, "eur_month": 40.95},
+        {"name": "PRO2-XS", "vcpu": 4, "ram_gb": 16, "eur_month": 81.90},
+        {"name": "PRO2-S", "vcpu": 8, "ram_gb": 32, "eur_month": 163.06}
+      ],
+      "note": "PLAY2 instances have limited availability and no fixed SLA; PRO2 is the production range. Also offers SQS/SNS-compatible queues and serverless functions.",
+      "source": "https://www.scaleway.com/en/pricing/virtual-instances/"
+    },
+    "hetzner": {
+      "name": "Hetzner", "company": "Hetzner Online", "hq": "Germany", "zone": "EU",
+      "terraform": "hetznercloud/hcloud", "phase2_automated": false,
+      "capabilities": ["object_storage", "load_balancer", "dns"],
+      "datacentres": [
+        {"city": "Falkenstein", "country": "Germany", "zone": "EU", "lat": 50.48, "lon": 12.37},
+        {"city": "Nuremberg", "country": "Germany", "zone": "EU", "lat": 49.45, "lon": 11.08},
+        {"city": "Helsinki", "country": "Finland", "zone": "EU", "lat": 60.17, "lon": 24.94}
+      ],
+      "plans": [
+        {"name": "CX23", "vcpu": 2, "ram_gb": 4, "eur_month": 5.99, "available": false},
+        {"name": "CX33", "vcpu": 4, "ram_gb": 8, "eur_month": 8.99, "available": false},
+        {"name": "CX43", "vcpu": 8, "ram_gb": 16, "eur_month": 16.49, "available": false},
+        {"name": "CX53", "vcpu": 16, "ram_gb": 32, "eur_month": 29.99, "available": false}
+      ],
+      "note": "Prices after the 2026 adjustments. On the date checked the official page marked these cost-optimized plans as currently unavailable to order. IPv4 costs extra (EUR 0.50/month). No managed database or managed Kubernetes.",
+      "source": "https://www.hetzner.com/cloud/cost-optimized/"
+    },
+    "ionos": {
+      "name": "IONOS", "company": "IONOS", "hq": "Germany", "zone": "EU",
+      "terraform": "ionos-cloud/ionoscloud", "phase2_automated": false,
+      "capabilities": ["object_storage", "managed_database", "managed_kubernetes", "load_balancer", "dns", "cdn"],
+      "datacentres": [
+        {"city": "Frankfurt", "country": "Germany", "zone": "EU", "lat": 50.11, "lon": 8.68},
+        {"city": "Berlin", "country": "Germany", "zone": "EU", "lat": 52.52, "lon": 13.40},
+        {"city": "Logroño", "country": "Spain", "zone": "EU", "lat": 42.47, "lon": -2.45},
+        {"city": "London", "country": "United Kingdom", "zone": "Europe (non-EU)", "lat": 51.51, "lon": -0.13},
+        {"city": "Worcester", "country": "United Kingdom", "zone": "Europe (non-EU)", "lat": 52.19, "lon": -2.22}
+      ],
+      "plans": [
+        {"name": "Basic Cube S", "vcpu": 2, "ram_gb": 4, "eur_month": 9.36},
+        {"name": "Memory Cube S", "vcpu": 2, "ram_gb": 8, "eur_month": 12.24},
+        {"name": "Basic Cube M", "vcpu": 4, "ram_gb": 8, "eur_month": 17.28},
+        {"name": "Memory Cube M", "vcpu": 4, "ram_gb": 16, "eur_month": 23.04},
+        {"name": "Basic Cube L", "vcpu": 8, "ram_gb": 16, "eur_month": 31.68},
+        {"name": "Memory Cube L", "vcpu": 8, "ram_gb": 32, "eur_month": 43.92}
+      ],
+      "note": "Cloud Cubes, price per 30 days (EUR). IONOS positions Cubes for non-critical workloads; its Compute Engine is the enterprise range.",
+      "source": "https://www.ionos.de/cloud-hosting"
+    }
+  }
+}

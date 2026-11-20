@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-ai-analysis", action="store_true",
                         help="with --ai: only write the report text, skip the AI analysis of each dependency")
     parser.add_argument("--migrate", metavar="OUT_DIR", help="phase 2: write the migration plan and files here")
+    parser.add_argument("--market", metavar="CITY", help="print the market study for a company in CITY "
+                                                        "(e.g. Lisbon): European providers by price, distance, services")
     parser.add_argument("--exclude-waste", action="store_true",
                         help="with --migrate/--out: leave suspected waste (unused things) out of the plan")
     parser.add_argument("--overwrite", action="store_true", help="allow --migrate to write into a non-empty folder")
@@ -119,6 +121,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{check.status}] {check.name}: {check.detail}")
         for path in sorted(migration.files):
             print(f"  - {path}")
+        return 0
+
+    if args.market:
+        from .market import CITIES, market_markdown, study
+
+        if args.market not in CITIES:
+            print(f"Unknown city {args.market!r}. Choose one of: {', '.join(CITIES)}", file=sys.stderr)
+            return 2
+        print(market_markdown(study(result.analysis, city=args.market)))
         return 0
 
     if args.json:

@@ -59,6 +59,25 @@ into a migration plan to Leaseweb and European alternatives, with the files to s
    explanations from those facts. Risks that mention non-existent resources are dropped. Without
    AI, a template text is used, so the report is always produced.
 
+## Market study: where to go
+
+The **Market study** tab (and `python -m exitpilot <folder> --market Lisbon`) compares European providers
+(Leaseweb, OVHcloud, Scaleway, Hetzner, IONOS, from `exitpilot/providers.json`) for *this* infrastructure:
+
+- **Price**: the machines the analysis found (sizes taken from `instance_type`/`size`, plus one machine for the
+  self-hosted services), each on the cheapest plan that fits, at public list prices (EUR excl. VAT, compute only).
+- **Proximity**: distance from the company's city to the provider's nearest EU data centre and the theoretical
+  minimum round trip over fibre (about 1 ms per 100 km).
+- **Managed services**: which of the managed services the infrastructure uses the provider offers.
+- **Automated migration** (weight 0 by default, so the study stays neutral): whether ExitPilot already generates the
+  provider's Terraform.
+
+`score = 100 x (wp x P + wd x D + wc x C + wa x A) / (wp + wd + wc + wa)`. The weights are sliders in the app.
+Providers whose plans cannot be ordered today are listed but never recommended. The AI can write the recommendation
+from these facts. Its pick must be an orderable provider of the list and every number it writes must come
+from the facts, otherwise ExitPilot's own text is shown. Prices were checked on the date in `providers.json`:
+review them before real decisions.
+
 ## What it does (phase 2: migrate)
 
 `exitpilot/migrate.py` turns the analysis into a plan. **Nothing is applied**: it is a proposal to review.
@@ -228,6 +247,7 @@ exitpilot/
   parser.py                  2a: Terraform -> common representation (python-hcl2 8.x)
   services.py                2b: config, code, dependencies, images, traffic -> common representation
   waste.py                   2c: suspected waste (unused resources, SDKs, variables)
+  market.py, providers.json  market study: European providers by price, distance, managed services
   catalog.json               categories, European alternatives, lock-in level per Terraform type
   services.json              third-party services: hosts, packages, company, headquarters, level
   classifier.py              catalog + services lookup, prefixes, modules, validated AI fallback
