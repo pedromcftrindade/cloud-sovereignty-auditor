@@ -24,7 +24,10 @@ files are served only from exitpilot/static/. Nothing the app reads is executed.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
+import re
 import tempfile
 import threading
 import traceback
@@ -34,7 +37,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .analysis import (LEVEL_COLOURS, SUPPORT_COLOUR, UNKNOWN_COLOUR, Result, analyse_folder,
                        safe_extract_zip, to_dot)
@@ -54,6 +57,7 @@ MAX_SESSIONS = 20
 
 EXAMPLE_INFO = {
     "loja-mista": "Online shop on AWS Ireland plus its application: compose, .env, code, network traffic",
+    "loja-lixo": "Shop on AWS Ireland with waste and exposed ports: unused disk, IP and SDKs, public database",
     "loja-simples": "Small shop on AWS Ireland: VM, S3, PostgreSQL, load balancer",
     "startup-serverless": "Serverless start-up on AWS USA: Lambda, DynamoDB, SQS, Cognito",
     "azure-loja": "Shop on Azure Netherlands: VM, Blob Storage, PostgreSQL, Cosmos DB",
@@ -203,17 +207,21 @@ def run_analysis(query: dict[str, str], body: bytes, content_type: str = "") -> 
     if body and "application/json" in content_type:
         # Several files (a .zip and/or single files: Terraform, docker-compose, .env, requirements, code),
         # sent as {"files": [{"name": ..., "data": <base64>}]}, like the Streamlit uploader.
-        import base64
         try:
             files = json.loads(body).get("files") or []
-        except (json.JSONDecodeError, AttributeError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError) as exc:
             raise ApiError(400, "Invalid upload.") from exc
+        if not isinstance(files, list) or not all(isinstance(f, dict) for f in files):
+            raise ApiError(400, "Invalid upload.")
         with tempfile.TemporaryDirectory() as tmp:
             for f in files:
                 name = Path(str(f.get("name", ""))).name           # never a path: no escaping the folder
-                if not name:
+                if not name or name in (".", ".."):
                     continue
-                data = base64.b64decode(f.get("data", ""))
+                try:
+                    data = base64.b64decode(str(f.get("data", "")), validate=True)
+                except (binascii.Error, ValueError) as exc:
+                    raise ApiError(400, f"Could not read {name}: invalid data.") from exc
                 if name.lower().endswith(".zip"):
                     try:
                         safe_extract_zip(data, tmp)
@@ -247,8 +255,9 @@ def run_analysis(query: dict[str, str], body: bytes, content_type: str = "") -> 
 
 def run_market(payload: dict[str, Any], ask_ai: bool) -> dict[str, Any]:
     session = STATE.get(payload.get("id", ""))
-    weights = {k: float(v) for k, v in (payload.get("weights") or {}).items()
-               if k in DEFAULT_WEIGHTS and isinstance(v, (int, float)) and 0 <= v <= 100}
+    raw = payload.get("weights") if isinstance(payload.get("weights"), dict) else {}
+    weights = {k: float(v) for k, v in raw.items()
+               if k in DEFAULT_WEIGHTS and isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 100}
     city = payload.get("city") if payload.get("city") in CITIES else "Lisbon"
     analysis = session["result"].analysis
     ms = study(analysis, city=city, weights=weights, include_basic=bool(payload.get("include_basic")),
@@ -295,6 +304,14 @@ def download(query: dict[str, str]) -> tuple[bytes, str, str]:
     raise ApiError(400, "Unknown download.")
 
 
+def attachment(filename: str) -> str:
+    """Content-Disposition for a download. The name can come from an uploaded file: keep the plain
+    filename ASCII-only (quotes, line breaks or emoji would break the header) and give the exact
+    name as filename* (RFC 6266), which browsers prefer."""
+    plain = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-.") or "download"
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = "ExitPilot"
@@ -318,7 +335,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def _body(self) -> bytes:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise ApiError(400, "Invalid Content-Length.") from exc
+        if length < 0:
+            raise ApiError(400, "Invalid Content-Length.")
         if length > MAX_UPLOAD:
             raise ApiError(413, f"Upload too large (max {MAX_UPLOAD // 1_000_000} MB).")
         return self.rfile.read(length) if length else b""
@@ -353,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/download":
             def send_file():
                 body, ctype, filename = download(self._query())
-                self._send(200, body, ctype, {"Content-Disposition": f'attachment; filename="{filename}"'})
+                self._send(200, body, ctype, {"Content-Disposition": attachment(filename)})
             self._handle(send_file)
         elif path in ("/", "/index.html"):
             self._static("index.html")

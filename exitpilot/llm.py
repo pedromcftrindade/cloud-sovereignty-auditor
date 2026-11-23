@@ -19,10 +19,17 @@ Interchangeable clients, chosen with make_llm() and LLM_PROVIDER:
 * Every failure (no key, no network, rate limit, invalid JSON, server down)
   returns None. The caller then falls back to a version without AI: the app
   never crashes because of the LLM.
+* Recorded answers (demo/ai_answers.json, made with `python -m exitpilot.record`):
+  the answers a real model gave for the example projects. They are replayed only
+  when no model is reachable, so someone who clones the repository without Ollama
+  or an API key still sees what the AI writes. The report then says which model
+  wrote them and when ("mistral, recorded on ..."). Other projects get the
+  template text, as without AI.
 
 Environment variables:
   LLM_PROVIDER       "mistral" (default), "local", "ollama" or "lmstudio"
-  EXITPILOT_OFFLINE  "1" = never call a model, only use the cache
+  EXITPILOT_OFFLINE  "1" = never call a model, only use the cache (and the recorded answers)
+  EXITPILOT_RECORDED path of the recorded answers, or "0" to ignore them
 
   Mistral:
     MISTRAL_API_KEY  API key (the free "Experiment" plan is enough for the demo)
@@ -64,6 +71,12 @@ OLLAMA_URL = "http://localhost:11434/v1"            # OpenAI-compatible endpoint
 OLLAMA_NATIVE_URL = "http://localhost:11434"         # native API ("ollama", recommended)
 OLLAMA_DEFAULT_MODEL = "mistral"
 DEFAULT_CACHE = Path(__file__).resolve().parent.parent / ".cache" / "llm_cache.json"
+RECORDED_ANSWERS = Path(__file__).resolve().parent.parent / "demo" / "ai_answers.json"
+
+
+def cache_key(model: str, system: str, prompt: str) -> str:
+    """Same model, same instructions, same facts: same key. Shared by the cache and the recorded answers."""
+    return hashlib.sha256(f"{model}\n{system}\n{prompt}".encode()).hexdigest()
 
 
 def _import_mistral():
@@ -136,7 +149,7 @@ class MistralClient:
             pass
 
     def _key(self, system: str, prompt: str) -> str:
-        return hashlib.sha256(f"{self.model}\n{system}\n{prompt}".encode()).hexdigest()
+        return cache_key(self.model, system, prompt)
 
     # ---------------------------------------------------------------- public
     @property
@@ -376,17 +389,99 @@ class OllamaClient(LocalClient):
         return ((reply or {}).get("message") or {}).get("content", "") or ""
 
 
+# ---------------------------------------------------------------- recorded answers
+def load_recording(path: Path | str | None) -> Optional[dict[str, Any]]:
+    """The recorded answers file, or None if there is none (or it is not a valid recording)."""
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict) or not data["answers"]:
+        return None
+    if not isinstance(data.get("recorded_with"), dict) or not data["recorded_with"].get("model"):
+        return None
+    return data
+
+
+class RecordedAnswers:
+    """Wraps the configured client. While its model is reachable, everything goes to it (and its cache).
+    While it is not, answers recorded with a real model are replayed for the exact prompts that were
+    recorded (the example projects); anything else gets no answer, so the program uses its template.
+
+    label and model then name the model that really wrote the recorded answers, so the report says
+    "AI text by Ollama (mistral, recorded on 2026-11-24)" and never credits the configured model."""
+
+    def __init__(self, inner: "MistralClient", recording: dict[str, Any]):
+        self.inner = inner
+        meta = recording["recorded_with"]
+        self.recorded_label = str(meta.get("label") or "AI")
+        self.recorded_model = str(meta["model"])
+        self.recorded_on = str(meta.get("recorded_on") or "")
+        self.answers: dict[str, Any] = recording["answers"]
+
+    def __getattr__(self, name: str) -> Any:          # cache_path, last_error, offline, base_url...
+        if name == "inner":
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+    @property
+    def replaying(self) -> bool:
+        return not self.inner.online
+
+    @property
+    def online(self) -> bool:
+        return self.inner.online
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def label(self) -> str:
+        return self.recorded_label if self.replaying else self.inner.label
+
+    @property
+    def model(self) -> str:
+        if not self.replaying:
+            return self.inner.model
+        return self.recorded_model + (f", recorded on {self.recorded_on}" if self.recorded_on else ", recorded")
+
+    @property
+    def status(self) -> str:
+        if not self.replaying:
+            return self.inner.status
+        return (f"{self.inner.status} The answers recorded with {self.recorded_label} ({self.recorded_model}) "
+                f"for the example projects are shown; other projects get the template text.")
+
+    def ask_json(self, prompt: str, system: str = "Answer only with valid JSON.", retries: int = 2) -> Optional[Any]:
+        answer = self.inner.ask_json(prompt, system=system, retries=retries)    # live model or its cache
+        if answer is not None or self.inner.online:
+            return answer
+        return self.answers.get(cache_key(self.recorded_model, system, prompt))
+
+
 LOCAL_PROVIDERS = {"local": LMSTUDIO_URL, "lmstudio": LMSTUDIO_URL, "lm-studio": LMSTUDIO_URL,
                    "ollama-openai": OLLAMA_URL, "openai_compat": LMSTUDIO_URL}
 
 
-def make_llm(provider: Optional[str] = None, **kwargs: Any) -> MistralClient:
-    """The client chosen by LLM_PROVIDER (default: Mistral). kwargs go to the client."""
+def make_llm(provider: Optional[str] = None, recorded: Path | str | None = None,
+             **kwargs: Any) -> "MistralClient | RecordedAnswers":
+    """The client chosen by LLM_PROVIDER (default: Mistral). kwargs go to the client.
+
+    recorded: the recorded answers to replay when no model is reachable (default: EXITPILOT_RECORDED,
+    else demo/ai_answers.json if it exists; "0" or "" = none)."""
     name = (provider or os.getenv("LLM_PROVIDER", "mistral")).strip().lower()
     if name == "mistral":
-        return MistralClient(**kwargs)
-    if name == "ollama":
-        return OllamaClient(**kwargs)
-    if name in LOCAL_PROVIDERS:
-        return LocalClient(default_url=LOCAL_PROVIDERS[name], **kwargs)
-    raise ValueError(f"Unknown LLM_PROVIDER {name!r}: use mistral, ollama, lmstudio, local or ollama-openai.")
+        client = MistralClient(**kwargs)
+    elif name == "ollama":
+        client = OllamaClient(**kwargs)
+    elif name in LOCAL_PROVIDERS:
+        client = LocalClient(default_url=LOCAL_PROVIDERS[name], **kwargs)
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER {name!r}: use mistral, ollama, lmstudio, local or ollama-openai.")
+    if recorded is None:
+        recorded = os.getenv("EXITPILOT_RECORDED", str(RECORDED_ANSWERS))
+    recording = load_recording(None if str(recorded) in ("", "0") else recorded)
+    return RecordedAnswers(client, recording) if recording else client

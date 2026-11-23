@@ -72,7 +72,7 @@ async function loadStatus() {
   const llm = state.status.llm;
   const pill = $("#ai-status");
   pill.classList.toggle("online", llm.online);
-  $(".label", pill).textContent = llm.online ? `AI: ${llm.label}${llm.model ? " · " + llm.model : ""}` : (llm.available ? "AI: cached answers only" : "AI offline");
+  $(".label", pill).textContent = llm.online ? `AI: ${llm.label}${llm.model ? " · " + llm.model : ""}` : (llm.available ? (/recorded/.test(llm.model || "") ? "AI: recorded answers" : "AI: cached answers only") : "AI offline");
   pill.title = llm.status;
   $("#ai-toggle-model").textContent = llm.model ? `(${llm.label} · ${llm.model})` : `(${llm.label})`;
   $("#ai-toggle-status").textContent = llm.status;

@@ -1,0 +1,6 @@
+flask==3.1.0
+stripe==11.4.1
+sentry-sdk==2.19.2
+# installed years ago for SMS and analytics experiments
+twilio==9.4.1
+mixpanel==4.10.1

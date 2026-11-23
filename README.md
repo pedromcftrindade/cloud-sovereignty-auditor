@@ -1,5 +1,12 @@
 # ExitPilot 🧭
 
+[![tests](https://github.com/pedromcftrindade/cloud-sovereignty-auditor/actions/workflows/tests.yml/badge.svg)](https://github.com/pedromcftrindade/cloud-sovereignty-auditor/actions/workflows/tests.yml)
+
+🥈 **2nd place at Hackathon Portugal 2026 - InfraHack: AI for Cloud Infrastructure** (Leaseweb x Velv,
+20 November 2026). Built in one day by a team of students.
+
+![ExitPilot web interface: the lock-in report of an online shop](screenshots/report.png)
+
 **How locked-in is your cloud, and who really controls it?** ExitPilot reads a company's
 infrastructure code (Terraform for AWS, Azure or Google Cloud) **and** the third-party services its
 application really uses (configuration, code, dependencies, container images, network traffic). It
@@ -7,8 +14,24 @@ measures how dependent the company is on each provider, how many dependencies ar
 companies headquartered outside the EU, and produces a sovereignty report with European
 alternatives, starting with Leaseweb.
 
-Built at **Hackathon Portugal 2026 - InfraHack: AI for Cloud Infrastructure** (Leaseweb x Velv),
-challenge track 02: *sovereign alternatives for locked-in hyperscale services*.
+Hackathon challenge track 02: *sovereign alternatives for locked-in hyperscale services*.
+
+## Try it in two minutes
+
+Requires **Python 3.11+**. No AI model, API key or account is needed to try it.
+
+```bash
+git clone https://github.com/pedromcftrindade/cloud-sovereignty-auditor.git
+cd cloud-sovereignty-auditor
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m exitpilot.webapp                             # then open http://127.0.0.1:8000
+```
+
+Pick an example (`loja-mista` is the most complete) and press **Analyse**. Without a model, ExitPilot shows the
+answers a real model gave for the example projects, recorded in `demo/ai_answers.json`: the report says which
+model wrote them and when. To run the AI live on your own projects, see
+[AI model](#ai-model-mistrals-api-or-a-model-on-your-own-machine).
 
 ## Why
 
@@ -83,6 +106,8 @@ The **Market study** tab (and `python -m exitpilot <folder> --market Lisbon`) co
   proximity or managed services (40 price, 30 proximity, 30 managed services, 30 automation). Set it to 0 for a
   study that ignores ExitPilot's own automation.
 
+![Market study: European providers compared for the loja-mista example](screenshots/market.png)
+
 `score = 100 x (wp x P + wd x D + wc x C + wa x A) / (wp + wd + wc + wa)`. The weights are sliders in the app.
 Providers whose plans cannot be ordered today are listed but never recommended. The AI can write the recommendation
 from these facts. Its pick must be an orderable provider of the list and every number it writes must come
@@ -92,6 +117,8 @@ review them before real decisions.
 ## What it does (phase 2: migrate)
 
 `exitpilot/migrate.py` turns the analysis into a plan. **Nothing is applied**: it is a proposal to review.
+
+![Phase 2: the migration plan for the loja-mista example, with decisions and waves](screenshots/migration.png)
 
 1. **Target** for every dependency, by category: a Leaseweb Public Cloud instance, a Leaseweb managed
    service (object storage, CDN, load balancer), open-source software self-hosted on Leaseweb
@@ -128,30 +155,24 @@ The generated files can be analysed again with ExitPilot: `python -m exitpilot o
 
 Requires **Python 3.11+**.
 
-```bash
-git clone https://github.com/pedromcftrindade/cloud-sovereignty-auditor.git
-cd cloud-sovereignty-auditor
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env                                   # then put your MISTRAL_API_KEY in .env
-python scripts/check_llm.py                            # optional: checks the configured AI works
-streamlit run app.py
-```
-
-Open http://localhost:8501, choose an example and press **Analyse**. The app also works without a
-key (template text) and offline (`EXITPILOT_OFFLINE=1`, cached AI answers only). To analyse your
-own project, upload a `.zip` of it.
-
-**New web interface** (HTML, CSS and JavaScript, no extra dependency), with the AI's briefing and analysis in
-front: an executive briefing, what to change, every dependency with its AI analysis, security and waste, the
-market study with live weights, and the exit plan with its generated files.
+Two interfaces share the same engine and the same `.env`:
 
 ```bash
-python -m exitpilot.webapp            # then open http://127.0.0.1:8000
+python -m exitpilot.webapp            # web interface (HTML, CSS, JavaScript): http://127.0.0.1:8000
+streamlit run app.py                  # Streamlit interface: http://localhost:8501
 ```
 
-It listens on this machine only by default (`--host 0.0.0.0` to share it on a network you trust). Same engine,
-same `.env`: the Streamlit app keeps working.
+The web interface puts the AI's work in front: the executive summary, what to change, every dependency with its
+AI analysis, security and waste, the market study with live weights, and the exit plan with its generated files.
+It listens on this machine only by default (`--host 0.0.0.0` to share it on a network you trust). To analyse your
+own project, upload a `.zip` of it (or single files). To configure the AI:
+
+```bash
+cp .env.example .env                  # Windows: copy .env.example .env  - then choose the model in .env
+python scripts/check_llm.py           # optional: checks the configured AI works
+```
+
+Without a model everything still works: template text for your projects, recorded answers for the examples.
 
 From the terminal:
 
@@ -195,12 +216,32 @@ LLM_PROVIDER=lmstudio LLM_MODEL=mistral-nemo-instruct-2407 streamlit run app.py
 ```
 
 For a demo that does not depend on the model being fast or even running, **record the cache once, then run offline**:
-answers are saved in `.cache/llm_cache.json`, keyed by the model name, so run both with the same `LLM_MODEL`.
+answers are saved in `.cache/llm_cache.json` (not committed), keyed by the model name, so run both with the same
+`LLM_MODEL`.
 
 ```bash
 python -m exitpilot examples/loja-mista --ai                      # records the answers
 EXITPILOT_OFFLINE=1 python -m exitpilot examples/loja-mista --ai   # replays them: instant, no model needed
 ```
+
+### Recorded answers for the examples (`demo/ai_answers.json`)
+
+So that anyone who clones the repository sees what the AI does, the answers a real model gave for the example
+projects are committed in `demo/ai_answers.json`. When no model is reachable, ExitPilot replays them for exactly
+those prompts, and the report names the model and the date ("AI text by Ollama (mistral, recorded on ...)").
+A live model, when reachable, is always used instead. Your own projects are never recorded and get the template
+text without a model. Set `EXITPILOT_RECORDED=0` to ignore the recording.
+
+Record again after changing a prompt, the facts sent to the model or an example (a test fails when the recording
+is out of date):
+
+```bash
+ollama serve                          # in another terminal, if Ollama is not already running
+python -m exitpilot.record            # every example, with the model configured in .env
+```
+
+The screenshots in this README come from `python scripts/screenshots.py` (optional; needs
+`pip install playwright` and `playwright install chromium`): run it after recording so they show the AI's text.
 
 ### What the AI does
 
@@ -240,7 +281,7 @@ next steps, Markdown), and the migration plan (before and after, steps, checks, 
 same file under **Common JSON** > *Download analysis.json (complete)*. Use `--no-ai-analysis` to keep the AI for
 the report text only.
 
-Run the tests:
+Run the tests (no model or network needed; GitHub Actions runs them on Linux and Windows on every push):
 
 ```bash
 python -m pytest -q
@@ -248,14 +289,14 @@ python -m pytest -q
 
 ## Examples (`examples/`)
 
-| Example | What it shows | Score | Outside the EU | After the plan (projected) |
+| Example | What it shows | Score | Outside the EU | After the plan (projected, suspected waste left out) |
 |---|---|---|---|---|
 | `loja-simples` | Small shop on AWS Ireland: EC2, S3, RDS PostgreSQL, load balancer | 67 | 4 of 4 | 92, 0 of 4 |
 | `startup-serverless` | Serverless start-up on AWS USA: Lambda, DynamoDB, SQS, API Gateway, Cognito | 13 | 5 of 5 | 100, 0 of 5 |
 | `casos-dificeis` | Remote and local modules, `count` with a variable, data block, unknown type, a broken file | 44 | 3 of 3 | 100, 0 of 3 |
 | `azure-loja` | Shop on Azure Netherlands: VM, Blob Storage, PostgreSQL, Cosmos DB, Functions | 33 | 5 of 5 | 93, 0 of 5 |
-| `loja-mista` | Terraform on AWS Ireland **plus** the application: docker-compose, `.env.example`, Python code, HTML, Dockerfile, network snapshot. 10 known services, 1 unknown partner API, and traps (local MinIO, private IP, URL in a comment) | 62 | 12 of 14 | 82, 0 of 14 |
-| `loja-lixo` | AWS Ireland + a Python app that grew without clean-ups: a disabled staging server, an unattached 500 GB disk, a reserved IP, an unused security group, Twilio and Mixpanel SDKs never imported, an old Maps URL never read | 64 | 12 of 12 | 8 suspected waste items, 7 left out of the plan |
+| `loja-mista` | Terraform on AWS Ireland **plus** the application: docker-compose, `.env.example`, Python code, HTML, Dockerfile, network snapshot. 10 known services, 1 unknown partner API, and traps (local MinIO, private IP, URL in a comment) | 62 | 12 of 14 | 83, 0 of 13 (SendGrid is configured but never used) |
+| `loja-lixo` | AWS Ireland + a Python app that grew without clean-ups: a disabled staging server, an unattached 500 GB disk, a reserved IP, an unused security group, Twilio and Mixpanel SDKs never imported, an old Maps URL never read; SSH and the database open to the internet | 64 | 12 of 12 | 81, 0 of 7 (8 suspected waste items, 7 left out) |
 
 The projection assumes every step is done. Self-hosting lowers lock-in but adds operations work.
 
@@ -264,6 +305,7 @@ The projection assumes every step is done. Self-hosting lowers lock-in but adds 
 ```
 app.py                       Streamlit interface
 exitpilot/
+  webapp.py, static/         web interface: HTTP server with a JSON API (standard library) and a page in plain JS
   __main__.py                command line (python -m exitpilot)
   model.py                   common representation (Resource, Analysis), shared by 2a and 2b
   parser.py                  2a: Terraform -> common representation (python-hcl2 8.x)
@@ -276,15 +318,19 @@ exitpilot/
   classifier.py              catalog + services lookup, prefixes, modules, validated AI fallback
   scoring.py                 sovereignty score and jurisdiction exposure
   regions.py                 region -> country / EU zone / jurisdiction note
-  llm.py                     Mistral API or local model server (LM Studio, Ollama), disk cache, offline mode
+  llm.py                     Mistral API or local model server (LM Studio, Ollama), disk cache, offline mode,
+                             recorded answers
+  record.py                  records the AI answers for the examples (python -m exitpilot.record)
   report.py                  Markdown report (numbers by Python, text by AI)
   analysis.py                pipeline (2a + 2b -> classify -> score -> report), dependency graph, safe zip
   ai_analysis.py             the AI analyses every dependency: validated JSON used by report, plan and export
   export.py                  analysis.json: facts, AI analysis, report and migration plan in one file
   migrate.py                 phase 2: targets, waves, generated files, projection, checks
 examples/                    input examples (see table above)
-tests/                       140 tests (pytest), including headless runs of the app and a fake model server
-docs/                        team plan and prompts used to generate test data
+demo/ai_answers.json         AI answers recorded for the examples, replayed when no model is reachable
+tests/                       pytest: parsers, scoring, AI validation, both interfaces, a fake model server
+.github/workflows/tests.yml  runs the tests on Linux and Windows on every push
+screenshots/                 images used in this README
 ```
 
 ## Adding a provider, a type or a service
@@ -298,6 +344,9 @@ Categories and their alternatives are written once in `catalog.json` and shared 
 
 ## Limitations (honest list)
 
+- ExitPilot covers the first part of a migration: discovery, assessment and planning (what to retire, keep,
+  move as it is, move to an open-source equivalent or rebuild, and in which order). Carrying it out (moving the
+  data, switching traffic over, rolling back if needed) stays with the team: the plan lists those steps.
 - Infrastructure created by hand in a web console cannot be analysed yet.
 - Remote Terraform modules are estimated from their name. Their internals are not downloaded.
 - Services are found by host, package or image. A service reached only through an IP address, or

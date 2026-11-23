@@ -220,7 +220,9 @@ def study(analysis: Analysis, city: str = "Lisbon", weights: Optional[dict[str, 
           skip_waste: bool = True, include_basic: bool = False, eu_only: bool = True) -> MarketStudy:
     data = load_providers()
     where = CITIES.get(city, CITIES["Lisbon"])
-    weights = DEFAULT_WEIGHTS | (weights or {})
+    # floats: the Streamlit sliders give 40, the web app 40.0. The same study must give the same AI prompt
+    # (and so the same cached answer) in both interfaces.
+    weights = {k: float(v) for k, v in (DEFAULT_WEIGHTS | (weights or {})).items()}
     machines = machines_needed(analysis, skip_waste)
     needed = capabilities_needed(analysis, skip_waste)
     offers: list[Offer] = []
